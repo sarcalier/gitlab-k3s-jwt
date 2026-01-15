@@ -1,0 +1,42 @@
+---
+# K3s installation defaults
+
+# K3s version - leave empty for latest stable
+k3s_version: ""
+
+# K3s installation channel (stable, latest, testing)
+k3s_channel: stable
+
+# K3s server or agent mode
+k3s_type: server
+
+# Additional k3s install arguments
+k3s_install_args: ""
+
+# K3s server arguments (for server nodes)
+k3s_server_args: ""
+
+# Whether to skip starting k3s after install
+k3s_skip_start: false
+
+# Disable services (comma-separated: traefik,servicelb,local-storage)
+k3s_disable: ""
+
+# TLS SAN entries for the k3s API server certificate
+k3s_tls_san: []
+
+# Cluster init (for HA setups with embedded etcd)
+k3s_cluster_init: false
+
+# Write kubeconfig mode
+k3s_write_kubeconfig_mode: "0644"
+
+# Data directory
+k3s_data_dir: /var/lib/rancher/k3s
+
+# Config file location
+k3s_config_file: /etc/rancher/k3s/config.yaml
+
+# Whether to fetch kubeconfig to local machine
+k3s_fetch_kubeconfig: true
+k3s_kubeconfig_local_path: "~/.kube/k3s-config"

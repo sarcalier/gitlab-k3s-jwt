@@ -1,0 +1,175 @@
+---
+# K3s installation tasks - idempotent
+
+- name: Check if k3s is already installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_binary
+
+- name: Get installed k3s version
+  ansible.builtin.command: k3s --version
+  register: k3s_installed_version
+  changed_when: false
+  failed_when: false
+  when: k3s_binary.stat.exists
+
+- name: Display k3s installation status
+  ansible.builtin.debug:
+    msg: "K3s is {{ 'already installed: ' + k3s_installed_version.stdout.split()[2] if k3s_binary.stat.exists else 'not installed' }}"
+
+- name: Install required packages
+  ansible.builtin.apt:
+    name:
+      - curl
+      - apt-transport-https
+      - ca-certificates
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Create k3s config directory
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+  become: true
+
+- name: Deploy k3s config file
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ k3s_config_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: Restart k3s
+  when: k3s_binary.stat.exists
+
+- name: Copy k3s install script to remote
+  ansible.builtin.copy:
+    src: k3s-install.sh
+    dest: /tmp/k3s-install.sh
+    mode: "0755"
+  become: true
+  when: not k3s_binary.stat.exists
+
+- name: Run k3s installer
+  ansible.builtin.shell: |
+    INSTALL_K3S_CHANNEL={{ k3s_channel }} K3S_KUBECONFIG_MODE={{ k3s_write_kubeconfig_mode }} /tmp/k3s-install.sh
+  args:
+    executable: /bin/bash
+  become: true
+  when: not k3s_binary.stat.exists
+  register: k3s_install_result
+  changed_when: k3s_install_result.rc == 0
+
+- name: Deploy k3s config file (after fresh install)
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ k3s_config_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: Restart k3s
+
+- name: Ensure k3s service is enabled and started
+  ansible.builtin.systemd:
+    name: k3s
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true
+
+- name: Wait for k3s to be ready
+  ansible.builtin.command: k3s kubectl get nodes
+  register: k3s_ready
+  until: k3s_ready.rc == 0
+  retries: 30
+  delay: 5
+  changed_when: false
+  become: true
+
+- name: Get node name
+  ansible.builtin.command: k3s kubectl get nodes -o jsonpath='{.items[0].metadata.name}'
+  register: k3s_node_name
+  changed_when: false
+  become: true
+
+- name: Check if worker label exists
+  ansible.builtin.command: >
+    k3s kubectl get node {{ k3s_node_name.stdout }}
+    -o jsonpath='{.metadata.labels.node-role\.kubernetes\.io/worker}'
+  register: worker_label
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Label node as worker
+  ansible.builtin.command: >
+    k3s kubectl label node {{ k3s_node_name.stdout }}
+    node-role.kubernetes.io/worker=true
+  become: true
+  when: worker_label.stdout == ""
+  changed_when: true
+
+- name: Display k3s node status
+  ansible.builtin.command: k3s kubectl get nodes
+  register: k3s_node_status
+  changed_when: false
+  become: true
+
+- name: Show node status
+  ansible.builtin.debug:
+    msg: "{{ k3s_node_status.stdout_lines }}"
+
+- name: Check if local kubeconfig exists
+  ansible.builtin.stat:
+    path: "{{ k3s_kubeconfig_local_path }}"
+  delegate_to: localhost
+  become: false
+  register: local_kubeconfig
+  when: k3s_fetch_kubeconfig
+
+- name: Check if local kubeconfig has correct server address
+  ansible.builtin.command: grep -c 'server:.*{{ ansible_host }}' "{{ k3s_kubeconfig_local_path }}"
+  delegate_to: localhost
+  become: false
+  register: kubeconfig_has_correct_ip
+  changed_when: false
+  failed_when: false
+  when:
+    - k3s_fetch_kubeconfig
+    - local_kubeconfig.stat.exists
+
+- name: Fetch kubeconfig to local machine
+  ansible.builtin.fetch:
+    src: /etc/rancher/k3s/k3s.yaml
+    dest: "{{ k3s_kubeconfig_local_path }}"
+    flat: true
+  become: true
+  when:
+    - k3s_fetch_kubeconfig
+    - not local_kubeconfig.stat.exists or (kubeconfig_has_correct_ip.rc | default(1)) != 0
+
+- name: Update kubeconfig server address
+  ansible.builtin.replace:
+    path: "{{ k3s_kubeconfig_local_path }}"
+    regexp: 'server: https://127\.0\.0\.1:6443'
+    replace: 'server: https://{{ ansible_host }}:6443'
+  delegate_to: localhost
+  become: false
+  when:
+    - k3s_fetch_kubeconfig
+    - not local_kubeconfig.stat.exists or (kubeconfig_has_correct_ip.rc | default(1)) != 0
+
+- name: Set kubeconfig file permissions
+  ansible.builtin.file:
+    path: "{{ k3s_kubeconfig_local_path }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when: k3s_fetch_kubeconfig

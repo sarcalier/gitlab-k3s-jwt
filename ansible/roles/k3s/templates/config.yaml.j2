@@ -1,0 +1,33 @@
+# K3s configuration file
+# Managed by Ansible - do not edit manually
+
+{% if k3s_write_kubeconfig_mode %}
+write-kubeconfig-mode: "{{ k3s_write_kubeconfig_mode }}"
+{% endif %}
+
+{% if k3s_tls_san %}
+tls-san:
+{% for san in k3s_tls_san %}
+  - {{ san }}
+{% endfor %}
+{% endif %}
+
+{% if k3s_disable %}
+disable:
+{% for svc in k3s_disable.split(',') %}
+  - {{ svc | trim }}
+{% endfor %}
+{% endif %}
+
+{% if k3s_cluster_init %}
+cluster-init: true
+{% endif %}
+
+{% if k3s_data_dir != '/var/lib/rancher/k3s' %}
+data-dir: {{ k3s_data_dir }}
+{% endif %}
+
+{% if k3s_server_args %}
+# Additional server arguments
+{{ k3s_server_args }}
+{% endif %}

@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  author: rgatiyatullin
+  description: Install and configure k3s Kubernetes distribution
+  license: MIT
+  min_ansible_version: "2.10"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - focal
+        - jammy
+        - noble
+  galaxy_tags:
+    - kubernetes
+    - k3s
+    - container
+
+dependencies: []

@@ -1,0 +1,14 @@
+---
+# Playbook to install k3s on target nodes
+- name: Install K3s
+  hosts: k3s_nodes
+  gather_facts: true
+
+  roles:
+    - role: k3s
+      vars:
+        k3s_type: server
+        k3s_channel: stable
+        k3s_write_kubeconfig_mode: "0644"
+        k3s_fetch_kubeconfig: true
+        k3s_kubeconfig_local_path: "~/.kube/k3s-config"
