@@ -1,0 +1,16 @@
+---
+# Playbook to install GitLab on k3s
+- name: Install GitLab on K3s
+  hosts: k3s_nodes
+  gather_facts: true
+
+  roles:
+    - role: gitlab
+      vars:
+        gitlab_domain: "gitlab.local"
+        gitlab_storage_class: "local-path"
+        gitlab_hostpath_base: "/opt/gitlab-data"
+        gitlab_minimal_resources: true
+        gitlab_runner_install: true
+        gitlab_disable_pages: true
+        gitlab_disable_kas: true

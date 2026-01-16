@@ -1,0 +1,74 @@
+# GitLab HostPath PersistentVolumes
+# Managed by Ansible
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: gitlab-gitaly-pv
+  labels:
+    app: gitlab
+    component: gitaly
+spec:
+  capacity:
+    storage: {{ gitlab_gitaly_persistence_size }}
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: {{ gitlab_storage_class }}
+  hostPath:
+    path: {{ gitlab_hostpath_base }}/gitaly
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: gitlab-postgresql-pv
+  labels:
+    app: gitlab
+    component: postgresql
+spec:
+  capacity:
+    storage: {{ gitlab_postgresql_persistence_size }}
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: {{ gitlab_storage_class }}
+  hostPath:
+    path: {{ gitlab_hostpath_base }}/postgresql
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: gitlab-redis-pv
+  labels:
+    app: gitlab
+    component: redis
+spec:
+  capacity:
+    storage: {{ gitlab_redis_persistence_size }}
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: {{ gitlab_storage_class }}
+  hostPath:
+    path: {{ gitlab_hostpath_base }}/redis
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: gitlab-minio-pv
+  labels:
+    app: gitlab
+    component: minio
+spec:
+  capacity:
+    storage: {{ gitlab_minio_persistence_size }}
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: {{ gitlab_storage_class }}
+  hostPath:
+    path: {{ gitlab_hostpath_base }}/minio
+    type: DirectoryOrCreate

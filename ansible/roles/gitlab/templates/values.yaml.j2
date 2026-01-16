@@ -1,0 +1,189 @@
+# GitLab Helm values - configured for single-node k3s with hostPath storage
+# Managed by Ansible
+
+global:
+  hosts:
+    domain: {{ gitlab_domain }}
+    externalIP: {{ ansible_host }}
+  
+  edition: {{ gitlab_edition }}
+  
+  ingress:
+    configureCertmanager: {{ gitlab_certmanager_install | lower }}
+    provider: traefik
+    class: traefik
+{% if gitlab_self_signed_certs %}
+    tls:
+      enabled: true
+{% endif %}
+    annotations:
+      kubernetes.io/ingress.class: traefik
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.tls: "true"
+
+{% if gitlab_root_password %}
+  initialRootPassword:
+    secret: gitlab-initial-root-password
+    key: password
+{% endif %}
+
+  # Storage configuration - use local-path (k3s default)
+  storageClass: {{ gitlab_storage_class }}
+
+# Cert-manager - handled via global.ingress.configureCertmanager
+certmanager-issuer:
+  email: admin@{{ gitlab_domain }}
+
+# nginx-ingress - disable as we use Traefik from k3s
+nginx-ingress:
+  enabled: false
+
+# Traefik ingress settings
+traefik:
+  install: false
+
+# Prometheus - disable for minimal install
+prometheus:
+  install: false
+
+# GitLab Runner
+gitlab-runner:
+  install: {{ gitlab_runner_install | lower }}
+{% if gitlab_runner_install %}
+  runners:
+    privileged: true
+  # Use internal cluster service URL for runner registration
+  gitlabUrl: http://{{ gitlab_release_name }}-webservice-default.{{ gitlab_namespace }}.svc.cluster.local:8181
+{% endif %}
+
+# Registry
+registry:
+  enabled: {{ not gitlab_disable_registry | lower }}
+{% if not gitlab_disable_registry %}
+  ingress:
+    class: traefik
+    annotations:
+      kubernetes.io/ingress.class: traefik
+{% endif %}
+
+# GitLab components
+gitlab:
+  gitlab-pages:
+    enabled: {{ not gitlab_disable_pages | lower }}
+{% if not gitlab_disable_pages %}
+    ingress:
+      class: traefik
+      annotations:
+        kubernetes.io/ingress.class: traefik
+{% endif %}
+  
+  kas:
+    enabled: {{ not gitlab_disable_kas | lower }}
+{% if not gitlab_disable_kas %}
+    ingress:
+      class: traefik
+      annotations:
+        kubernetes.io/ingress.class: traefik
+{% endif %}
+
+  webservice:
+    ingress:
+      class: traefik
+      annotations:
+        kubernetes.io/ingress.class: traefik
+{% if gitlab_minimal_resources %}
+    minReplicas: 1
+    maxReplicas: 1
+    resources:
+      requests:
+        cpu: 300m
+        memory: 1.5G
+      limits:
+        cpu: 2
+        memory: 3G
+{% endif %}
+
+  sidekiq:
+{% if gitlab_minimal_resources %}
+    minReplicas: 1
+    maxReplicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 1G
+      limits:
+        cpu: 1
+        memory: 2G
+{% endif %}
+
+  gitaly:
+    persistence:
+      size: {{ gitlab_gitaly_persistence_size }}
+      storageClass: {{ gitlab_storage_class }}
+{% if gitlab_minimal_resources %}
+    resources:
+      requests:
+        cpu: 100m
+        memory: 200Mi
+      limits:
+        cpu: 1
+        memory: 1G
+{% endif %}
+
+  gitlab-shell:
+{% if gitlab_minimal_resources %}
+    minReplicas: 1
+    maxReplicas: 1
+{% endif %}
+
+  toolbox:
+{% if gitlab_minimal_resources %}
+    replicas: 1
+{% endif %}
+
+# PostgreSQL
+postgresql:
+  persistence:
+    size: {{ gitlab_postgresql_persistence_size }}
+    storageClass: {{ gitlab_storage_class }}
+{% if gitlab_minimal_resources %}
+  primary:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1
+        memory: 1G
+{% endif %}
+
+# Redis
+redis:
+  master:
+    persistence:
+      size: {{ gitlab_redis_persistence_size }}
+      storageClass: {{ gitlab_storage_class }}
+{% if gitlab_minimal_resources %}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+{% endif %}
+
+# MinIO (object storage)
+minio:
+  persistence:
+    size: {{ gitlab_minio_persistence_size }}
+    storageClass: {{ gitlab_storage_class }}
+{% if gitlab_minimal_resources %}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+{% endif %}

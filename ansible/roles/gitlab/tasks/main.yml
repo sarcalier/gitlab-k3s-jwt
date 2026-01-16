@@ -1,0 +1,211 @@
+---
+# GitLab Helm installation tasks
+
+- name: Check if Helm is installed
+  ansible.builtin.command: which helm
+  register: helm_check
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Install Helm
+  ansible.builtin.shell: |
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  args:
+    executable: /bin/bash
+  become: true
+  when: helm_check.rc != 0
+
+- name: Create GitLab namespace
+  ansible.builtin.command: k3s kubectl create namespace {{ gitlab_namespace }}
+  register: ns_create
+  changed_when: ns_create.rc == 0
+  failed_when: ns_create.rc != 0 and 'already exists' not in ns_create.stderr
+  become: true
+
+- name: Check if GitLab Helm repo exists
+  ansible.builtin.command: helm repo list -o json
+  register: helm_repos
+  changed_when: false
+  failed_when: false
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Add GitLab Helm repository
+  ansible.builtin.command: helm repo add gitlab https://charts.gitlab.io/
+  become: true
+  when: "'gitlab' not in helm_repos.stdout"
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Update Helm repositories
+  ansible.builtin.command: helm repo update
+  become: true
+  changed_when: false
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Create GitLab hostPath directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0777"
+    owner: root
+    group: root
+  become: true
+  loop:
+    - "{{ gitlab_hostpath_base }}"
+    - "{{ gitlab_hostpath_base }}/gitaly"
+    - "{{ gitlab_hostpath_base }}/postgresql"
+    - "{{ gitlab_hostpath_base }}/redis"
+    - "{{ gitlab_hostpath_base }}/minio"
+    - "{{ gitlab_hostpath_base }}/gitlab-rails"
+
+- name: Check if GitLab config directory exists
+  ansible.builtin.stat:
+    path: /etc/gitlab-k3s
+  register: gitlab_config_dir
+  become: true
+
+- name: Create GitLab config directory
+  ansible.builtin.file:
+    path: /etc/gitlab-k3s
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+  become: true
+  when: not gitlab_config_dir.stat.exists
+
+- name: Check if PV manifest exists
+  ansible.builtin.stat:
+    path: /etc/gitlab-k3s/gitlab-pvs.yaml
+  register: gitlab_pvs_file
+  become: true
+
+- name: Create hostPath PersistentVolumes manifest
+  ansible.builtin.template:
+    src: persistent-volumes.yaml.j2
+    dest: /etc/gitlab-k3s/gitlab-pvs.yaml
+    mode: "0644"
+  become: true
+  register: gitlab_pvs_template
+
+- name: Apply hostPath PersistentVolumes
+  ansible.builtin.command: k3s kubectl apply -f /etc/gitlab-k3s/gitlab-pvs.yaml
+  become: true
+  register: pv_apply
+  changed_when: "'created' in pv_apply.stdout"
+  when: gitlab_pvs_template.changed or not gitlab_pvs_file.stat.exists
+
+- name: Check if values file exists
+  ansible.builtin.stat:
+    path: /etc/gitlab-k3s/gitlab-values.yaml
+  register: gitlab_values_file
+  become: true
+
+- name: Create GitLab Helm values file
+  ansible.builtin.template:
+    src: values.yaml.j2
+    dest: /etc/gitlab-k3s/gitlab-values.yaml
+    mode: "0644"
+  become: true
+  register: gitlab_values_template
+
+- name: Check if GitLab is already installed
+  ansible.builtin.shell: |
+    helm list -n {{ gitlab_namespace }} -o json | grep -q '"status":"deployed"' && echo "deployed" || echo "not_deployed"
+  register: gitlab_status
+  changed_when: false
+  failed_when: false
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Get installed GitLab chart version
+  ansible.builtin.shell: |
+    helm list -n {{ gitlab_namespace }} -o json | grep -oP '"chart":"gitlab-\K[^"]+' || echo ""
+  register: gitlab_installed_version
+  changed_when: false
+  failed_when: false
+  become: true
+  when: gitlab_status.stdout == "deployed"
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Display GitLab installation status
+  ansible.builtin.debug:
+    msg: "GitLab {{ 'installed version: ' + gitlab_installed_version.stdout if gitlab_status.stdout == 'deployed' else 'not installed or not deployed' }}"
+
+- name: Uninstall failed GitLab release if exists
+  ansible.builtin.command: helm uninstall {{ gitlab_release_name }} -n {{ gitlab_namespace }}
+  become: true
+  when: gitlab_status.stdout != "deployed"
+  failed_when: false
+  changed_when: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Install GitLab via Helm
+  ansible.builtin.command: >
+    helm install {{ gitlab_release_name }} gitlab/gitlab
+    --namespace {{ gitlab_namespace }}
+    --values /etc/gitlab-k3s/gitlab-values.yaml
+    --timeout 600s
+    --version {{ gitlab_chart_version }}
+  become: true
+  when: gitlab_status.stdout != "deployed"
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Upgrade GitLab via Helm (if version changed)
+  ansible.builtin.command: >
+    helm upgrade {{ gitlab_release_name }} gitlab/gitlab
+    --namespace {{ gitlab_namespace }}
+    --values /etc/gitlab-k3s/gitlab-values.yaml
+    --timeout 600s
+    --version {{ gitlab_chart_version }}
+  become: true
+  when:
+    - gitlab_status.stdout == "deployed"
+    - gitlab_installed_version.stdout != gitlab_chart_version
+  register: gitlab_upgrade
+  changed_when: gitlab_upgrade.rc == 0
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Wait for GitLab to be ready
+  ansible.builtin.shell: |
+    k3s kubectl wait --for=condition=available deployment/{{ gitlab_release_name }}-webservice-default \
+      -n {{ gitlab_namespace }} --timeout=600s
+  become: true
+  register: gitlab_ready
+  retries: 3
+  delay: 30
+  until: gitlab_ready.rc == 0
+  failed_when: false
+  changed_when: false
+
+- name: Get GitLab initial root password
+  ansible.builtin.command: >
+    k3s kubectl get secret {{ gitlab_release_name }}-gitlab-initial-root-password
+    -n {{ gitlab_namespace }}
+    -o jsonpath='{.data.password}'
+  become: true
+  register: gitlab_root_password_b64
+  changed_when: false
+  when: gitlab_root_password == ""
+
+- name: Decode GitLab root password
+  ansible.builtin.set_fact:
+    gitlab_initial_password: "{{ gitlab_root_password_b64.stdout | b64decode }}"
+  when: gitlab_root_password == "" and gitlab_root_password_b64.stdout != ""
+
+- name: Display GitLab access information
+  ansible.builtin.debug:
+    msg:
+      - "GitLab has been installed!"
+      - "URL: {{ gitlab_external_url }}"
+      - "Username: root"
+      - "Password: {{ gitlab_initial_password | default(gitlab_root_password) | default('Check secret: kubectl get secret gitlab-gitlab-initial-root-password -n gitlab -o jsonpath={.data.password} | base64 -d') }}"

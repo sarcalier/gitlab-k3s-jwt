@@ -1,0 +1,19 @@
+---
+galaxy_info:
+  author: rgatiyatullin
+  description: Install GitLab via Helm on Kubernetes
+  license: MIT
+  min_ansible_version: "2.10"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - focal
+        - jammy
+        - noble
+  galaxy_tags:
+    - gitlab
+    - kubernetes
+    - helm
+
+dependencies:
+  - role: k3s

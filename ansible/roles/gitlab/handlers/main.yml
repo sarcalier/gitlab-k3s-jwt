@@ -1,0 +1,7 @@
+---
+# GitLab handlers
+
+- name: Restart GitLab pods
+  ansible.builtin.command: >
+    k3s kubectl rollout restart deployment -n {{ gitlab_namespace }}
+  become: true

@@ -1,0 +1,58 @@
+---
+# GitLab Helm installation defaults
+
+# GitLab namespace
+gitlab_namespace: gitlab
+
+# GitLab Helm release name
+gitlab_release_name: gitlab
+
+# GitLab Helm chart version
+gitlab_chart_version: "9.8.0"
+
+# GitLab domain - REQUIRED
+gitlab_domain: "gitlab.local"
+
+# GitLab external URL
+gitlab_external_url: "https://{{ gitlab_domain }}"
+
+# Enable certmanager for automatic TLS certificates
+gitlab_certmanager_install: false
+
+# Use self-signed certificates
+gitlab_self_signed_certs: true
+
+# GitLab edition: ce or ee
+gitlab_edition: ce
+
+# Initial root password (leave empty to auto-generate)
+gitlab_root_password: ""
+
+# GitLab Runner - install runner
+gitlab_runner_install: true
+
+# Storage configuration
+gitlab_storage_class: "local-path"
+
+# HostPath base directory for persistent storage
+gitlab_hostpath_base: "/opt/gitlab-data"
+
+# Resource limits (for small single-node deployment)
+gitlab_minimal_resources: true
+
+# Disable components not needed for minimal install
+gitlab_disable_registry: false
+gitlab_disable_pages: true
+gitlab_disable_kas: true
+
+# PostgreSQL settings
+gitlab_postgresql_persistence_size: "8Gi"
+
+# Redis settings  
+gitlab_redis_persistence_size: "5Gi"
+
+# Gitaly settings
+gitlab_gitaly_persistence_size: "50Gi"
+
+# MinIO settings (object storage)
+gitlab_minio_persistence_size: "10Gi"
