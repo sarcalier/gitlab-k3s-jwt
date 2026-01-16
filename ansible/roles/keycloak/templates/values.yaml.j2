@@ -1,4 +1,4 @@
-# Keycloakx Helm values - configured for single-node k3s
+# Keycloakx Helm values - configured for single-node k3s with PostgreSQL
 # Managed by Ansible
 
 # Replicas
@@ -10,10 +10,11 @@ image:
   tag: "26.5.0"
   pullPolicy: IfNotPresent
 
-# Command to start Keycloak in dev mode (uses H2 embedded database)
+# Command to start Keycloak (builds on first start, then runs)
 command:
   - "/opt/keycloak/bin/kc.sh"
-  - "start-dev"
+  - "start"
+  - "--db=postgres"
 
 # Extra environment variables
 extraEnv: |
@@ -23,22 +24,45 @@ extraEnv: |
     value: {{ keycloak_admin_password }}
   - name: KC_PROXY
     value: edge
+  - name: KC_HOSTNAME
+    value: {{ keycloak_domain }}
   - name: KC_HOSTNAME_STRICT
     value: "false"
   - name: KC_HOSTNAME_STRICT_HTTPS
     value: "false"
   - name: KC_HTTP_ENABLED
     value: "true"
+  - name: KC_HEALTH_ENABLED
+    value: "true"
+  - name: KC_METRICS_ENABLED
+    value: "true"
+
+# Database configuration
+database:
+  vendor: {{ keycloak_db_vendor }}
+  hostname: {{ keycloak_db_host }}
+  port: {{ keycloak_db_port }}
+  database: {{ keycloak_db_name }}
+  username: {{ keycloak_db_user }}
+  password: {{ keycloak_db_password }}
+
+# Database checker - wait for PostgreSQL to be ready
+dbchecker:
+  enabled: true
+  image:
+    repository: docker.io/busybox
+    tag: "1.36"
+    pullPolicy: IfNotPresent
 
 {% if keycloak_minimal_resources %}
 # Resource limits for minimal deployment
 resources:
   requests:
-    cpu: 250m
+    cpu: 500m
     memory: 512Mi
   limits:
-    cpu: 1
-    memory: 1Gi
+    cpu: 2
+    memory: 1536Mi
 {% endif %}
 
 # HTTP settings
@@ -65,7 +89,6 @@ ingress:
       paths:
         - path: {{ keycloak_http_relative_path }}
           pathType: Prefix
-  # No TLS secret - use Traefik's default certificate or HTTP
   tls: []
 
 # Disable pod anti-affinity for single-node deployment
@@ -78,3 +101,7 @@ podSecurityContext:
 securityContext:
   runAsUser: 1000
   runAsNonRoot: true
+
+# Cache configuration for single instance
+cache:
+  stack: default

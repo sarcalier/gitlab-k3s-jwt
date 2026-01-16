@@ -18,7 +18,7 @@ keycloak_domain: "keycloak.local"
 
 # Keycloak admin credentials
 keycloak_admin_user: admin
-keycloak_admin_password: "admin"  # Set a default for dev mode
+keycloak_admin_password: "admin"
 
 # Resource limits (for small single-node deployment)
 keycloak_minimal_resources: true
@@ -32,3 +32,16 @@ keycloak_replicas: 1
 
 # HTTP relative path (context path)
 keycloak_http_relative_path: /
+
+# Database settings
+keycloak_db_vendor: postgres
+keycloak_db_host: keycloak-postgresql
+keycloak_db_port: 5432
+keycloak_db_name: keycloak
+keycloak_db_user: keycloak
+keycloak_db_password: keycloak123
+
+# PostgreSQL persistence
+keycloak_postgresql_storage_class: local-path
+keycloak_postgresql_storage_size: 5Gi
+keycloak_hostpath_base: /opt/keycloak-data

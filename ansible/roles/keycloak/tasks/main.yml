@@ -23,6 +23,15 @@
   failed_when: ns_create.rc != 0 and 'already exists' not in ns_create.stderr
   become: true
 
+- name: Create Keycloak hostPath directory for PostgreSQL
+  ansible.builtin.file:
+    path: "{{ keycloak_hostpath_base }}/postgresql"
+    state: directory
+    mode: "0777"
+    owner: root
+    group: root
+  become: true
+
 - name: Check if Keycloak config directory exists
   ansible.builtin.stat:
     path: /etc/keycloak-k3s
@@ -71,6 +80,39 @@
   become: true
   when: not keycloak_chart_file.stat.exists
   register: keycloak_chart_sync
+
+- name: Create PostgreSQL manifest
+  ansible.builtin.template:
+    src: postgresql.yaml.j2
+    dest: /etc/keycloak-k3s/postgresql.yaml
+    mode: "0644"
+  become: true
+  register: postgresql_manifest
+
+- name: Check if PostgreSQL is already deployed
+  ansible.builtin.command: k3s kubectl get statefulset keycloak-postgresql -n {{ keycloak_namespace }}
+  register: postgresql_exists
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Deploy PostgreSQL for Keycloak
+  ansible.builtin.command: k3s kubectl apply -f /etc/keycloak-k3s/postgresql.yaml
+  become: true
+  register: postgresql_deploy
+  changed_when: "'created' in postgresql_deploy.stdout"
+  when: postgresql_exists.rc != 0 or postgresql_manifest.changed
+
+- name: Wait for PostgreSQL to be ready
+  ansible.builtin.shell: |
+    k3s kubectl wait --for=condition=ready pod -l app=keycloak-postgresql \
+      -n {{ keycloak_namespace }} --timeout=120s
+  become: true
+  register: postgresql_ready
+  retries: 3
+  delay: 10
+  until: postgresql_ready.rc == 0
+  changed_when: false
 
 - name: Create Keycloak Helm values file
   ansible.builtin.template:
@@ -155,8 +197,9 @@
 - name: Display Keycloak access information
   ansible.builtin.debug:
     msg:
-      - "Keycloak has been installed!"
-      - "URL: https://{{ keycloak_domain }}"
-      - "Admin Console: https://{{ keycloak_domain }}/admin"
+      - "Keycloak has been installed with PostgreSQL persistence!"
+      - "URL: http://{{ keycloak_domain }}"
+      - "Admin Console: http://{{ keycloak_domain }}/admin"
       - "Username: {{ keycloak_admin_user }}"
       - "Password: {{ keycloak_admin_password }}"
+      - "Database: PostgreSQL ({{ keycloak_db_host }}:{{ keycloak_db_port }}/{{ keycloak_db_name }})"

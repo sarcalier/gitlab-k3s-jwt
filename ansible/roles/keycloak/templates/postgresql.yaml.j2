@@ -1,0 +1,100 @@
+# PostgreSQL for Keycloak - Managed by Ansible
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-postgresql
+  namespace: {{ keycloak_namespace }}
+type: Opaque
+stringData:
+  postgres-password: {{ keycloak_db_password }}
+  password: {{ keycloak_db_password }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ keycloak_db_host }}
+  namespace: {{ keycloak_namespace }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ keycloak_db_port }}
+      targetPort: 5432
+      name: postgresql
+  selector:
+    app: keycloak-postgresql
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: keycloak-postgresql
+  namespace: {{ keycloak_namespace }}
+spec:
+  serviceName: {{ keycloak_db_host }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak-postgresql
+  template:
+    metadata:
+      labels:
+        app: keycloak-postgresql
+    spec:
+      containers:
+        - name: postgresql
+          image: postgres:15-alpine
+          ports:
+            - containerPort: 5432
+              name: postgresql
+          env:
+            - name: POSTGRES_DB
+              value: {{ keycloak_db_name }}
+            - name: POSTGRES_USER
+              value: {{ keycloak_db_user }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-postgresql
+                  key: password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ keycloak_db_user }}
+                - -d
+                - {{ keycloak_db_name }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ keycloak_db_user }}
+                - -d
+                - {{ keycloak_db_name }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ keycloak_postgresql_storage_class }}
+        resources:
+          requests:
+            storage: {{ keycloak_postgresql_storage_size }}
