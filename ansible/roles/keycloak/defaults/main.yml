@@ -1,0 +1,34 @@
+---
+# Keycloak Helm installation defaults (using keycloakx chart)
+
+# Keycloak namespace
+keycloak_namespace: keycloak
+
+# Keycloak Helm release name
+keycloak_release_name: keycloak
+
+# Keycloak Helm chart path (local - relative to repo root)
+keycloak_chart_path: "{{ playbook_dir }}/../../charts/keycloakx"
+
+# Keycloak chart version
+keycloak_chart_version: "7.1.6"
+
+# Keycloak domain
+keycloak_domain: "keycloak.local"
+
+# Keycloak admin credentials
+keycloak_admin_user: admin
+keycloak_admin_password: "admin"  # Set a default for dev mode
+
+# Resource limits (for small single-node deployment)
+keycloak_minimal_resources: true
+
+# Ingress settings
+keycloak_ingress_enabled: true
+keycloak_ingress_class: traefik
+
+# Replicas
+keycloak_replicas: 1
+
+# HTTP relative path (context path)
+keycloak_http_relative_path: /

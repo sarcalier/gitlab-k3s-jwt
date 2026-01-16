@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  author: rgatiyatullin
+  description: Install Keycloak via Helm on Kubernetes
+  license: MIT
+  min_ansible_version: "2.10"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - focal
+        - jammy
+        - noble
+  galaxy_tags:
+    - keycloak
+    - kubernetes
+    - helm
+    - identity
+
+dependencies:
+  - role: k3s

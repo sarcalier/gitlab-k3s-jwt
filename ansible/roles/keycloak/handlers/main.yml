@@ -1,0 +1,7 @@
+---
+# Keycloak handlers
+
+- name: Restart Keycloak pods
+  ansible.builtin.command: >
+    k3s kubectl rollout restart deployment/{{ keycloak_release_name }} -n {{ keycloak_namespace }}
+  become: true

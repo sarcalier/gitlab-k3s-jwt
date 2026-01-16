@@ -1,0 +1,80 @@
+# Keycloakx Helm values - configured for single-node k3s
+# Managed by Ansible
+
+# Replicas
+replicas: {{ keycloak_replicas }}
+
+# Image configuration (uses official Keycloak image from quay.io)
+image:
+  repository: quay.io/keycloak/keycloak
+  tag: "26.5.0"
+  pullPolicy: IfNotPresent
+
+# Command to start Keycloak in dev mode (uses H2 embedded database)
+command:
+  - "/opt/keycloak/bin/kc.sh"
+  - "start-dev"
+
+# Extra environment variables
+extraEnv: |
+  - name: KEYCLOAK_ADMIN
+    value: {{ keycloak_admin_user }}
+  - name: KEYCLOAK_ADMIN_PASSWORD
+    value: {{ keycloak_admin_password }}
+  - name: KC_PROXY
+    value: edge
+  - name: KC_HOSTNAME_STRICT
+    value: "false"
+  - name: KC_HOSTNAME_STRICT_HTTPS
+    value: "false"
+  - name: KC_HTTP_ENABLED
+    value: "true"
+
+{% if keycloak_minimal_resources %}
+# Resource limits for minimal deployment
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 1
+    memory: 1Gi
+{% endif %}
+
+# HTTP settings
+http:
+  relativePath: {{ keycloak_http_relative_path }}
+
+# Service configuration
+service:
+  type: ClusterIP
+  httpPort: 80
+  httpsPort: 8443
+
+# Ingress configuration
+ingress:
+  enabled: {{ keycloak_ingress_enabled | lower }}
+  ingressClassName: {{ keycloak_ingress_class }}
+  annotations:
+    kubernetes.io/ingress.class: {{ keycloak_ingress_class }}
+{% if keycloak_ingress_class == 'traefik' %}
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+{% endif %}
+  rules:
+    - host: {{ keycloak_domain }}
+      paths:
+        - path: {{ keycloak_http_relative_path }}
+          pathType: Prefix
+  # No TLS secret - use Traefik's default certificate or HTTP
+  tls: []
+
+# Disable pod anti-affinity for single-node deployment
+affinity: ""
+
+# Security context
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsUser: 1000
+  runAsNonRoot: true

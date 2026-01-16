@@ -1,0 +1,162 @@
+---
+# Keycloak Helm installation tasks (using keycloakx chart)
+
+- name: Check if Helm is installed
+  ansible.builtin.command: which helm
+  register: helm_check
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Install Helm
+  ansible.builtin.shell: |
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  args:
+    executable: /bin/bash
+  become: true
+  when: helm_check.rc != 0
+
+- name: Create Keycloak namespace
+  ansible.builtin.command: k3s kubectl create namespace {{ keycloak_namespace }}
+  register: ns_create
+  changed_when: ns_create.rc == 0
+  failed_when: ns_create.rc != 0 and 'already exists' not in ns_create.stderr
+  become: true
+
+- name: Check if Keycloak config directory exists
+  ansible.builtin.stat:
+    path: /etc/keycloak-k3s
+  register: keycloak_config_dir
+  become: true
+
+- name: Create Keycloak config directory
+  ansible.builtin.file:
+    path: /etc/keycloak-k3s
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+  become: true
+  when: not keycloak_config_dir.stat.exists
+
+- name: Check if Keycloak chart directory exists
+  ansible.builtin.stat:
+    path: /etc/keycloak-k3s/chart
+  register: keycloak_chart_dir
+  become: true
+
+- name: Create Keycloak chart directory on remote
+  ansible.builtin.file:
+    path: /etc/keycloak-k3s/chart
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+  become: true
+  when: not keycloak_chart_dir.stat.exists
+
+- name: Check if chart already synced
+  ansible.builtin.stat:
+    path: /etc/keycloak-k3s/chart/Chart.yaml
+  register: keycloak_chart_file
+  become: true
+
+- name: Synchronize Keycloak Helm chart to remote
+  ansible.builtin.synchronize:
+    src: "{{ keycloak_chart_path }}/"
+    dest: /etc/keycloak-k3s/chart/
+    recursive: true
+    delete: true
+    checksum: true
+  become: true
+  when: not keycloak_chart_file.stat.exists
+  register: keycloak_chart_sync
+
+- name: Create Keycloak Helm values file
+  ansible.builtin.template:
+    src: values.yaml.j2
+    dest: /etc/keycloak-k3s/keycloak-values.yaml
+    mode: "0644"
+  become: true
+  register: keycloak_values_template
+
+- name: Check if Keycloak is already installed
+  ansible.builtin.shell: |
+    helm list -n {{ keycloak_namespace }} -o json | grep -q '"status":"deployed"' && echo "deployed" || echo "not_deployed"
+  register: keycloak_status
+  changed_when: false
+  failed_when: false
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Get installed Keycloak chart version
+  ansible.builtin.shell: |
+    helm list -n {{ keycloak_namespace }} -o json | grep -oP '"chart":"keycloakx-\K[^"]+' || echo ""
+  register: keycloak_installed_version
+  changed_when: false
+  failed_when: false
+  become: true
+  when: keycloak_status.stdout == "deployed"
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Display Keycloak installation status
+  ansible.builtin.debug:
+    msg: "Keycloak {{ 'installed version: ' + keycloak_installed_version.stdout if keycloak_status.stdout == 'deployed' else 'not installed' }}"
+
+- name: Uninstall failed Keycloak release if exists
+  ansible.builtin.command: helm uninstall {{ keycloak_release_name }} -n {{ keycloak_namespace }}
+  become: true
+  when: keycloak_status.stdout != "deployed"
+  failed_when: false
+  changed_when: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Install Keycloak via Helm
+  ansible.builtin.command: >
+    helm install {{ keycloak_release_name }} /etc/keycloak-k3s/chart
+    --namespace {{ keycloak_namespace }}
+    --values /etc/keycloak-k3s/keycloak-values.yaml
+    --timeout 600s
+  become: true
+  when: keycloak_status.stdout != "deployed"
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Upgrade Keycloak via Helm (if version changed)
+  ansible.builtin.command: >
+    helm upgrade {{ keycloak_release_name }} /etc/keycloak-k3s/chart
+    --namespace {{ keycloak_namespace }}
+    --values /etc/keycloak-k3s/keycloak-values.yaml
+    --timeout 600s
+  become: true
+  when:
+    - keycloak_status.stdout == "deployed"
+    - keycloak_installed_version.stdout != keycloak_chart_version
+  register: keycloak_upgrade
+  changed_when: keycloak_upgrade.rc == 0
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Wait for Keycloak to be ready
+  ansible.builtin.shell: |
+    k3s kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=keycloakx \
+      -n {{ keycloak_namespace }} --timeout=300s
+  become: true
+  register: keycloak_ready
+  retries: 3
+  delay: 30
+  until: keycloak_ready.rc == 0
+  failed_when: false
+  changed_when: false
+
+- name: Display Keycloak access information
+  ansible.builtin.debug:
+    msg:
+      - "Keycloak has been installed!"
+      - "URL: https://{{ keycloak_domain }}"
+      - "Admin Console: https://{{ keycloak_domain }}/admin"
+      - "Username: {{ keycloak_admin_user }}"
+      - "Password: {{ keycloak_admin_password }}"

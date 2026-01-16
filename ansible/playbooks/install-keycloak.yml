@@ -1,0 +1,13 @@
+---
+# Playbook to install Keycloak on k3s (using keycloakx chart)
+- name: Install Keycloak on K3s
+  hosts: k3s_nodes
+  gather_facts: true
+
+  roles:
+    - role: keycloak
+      vars:
+        keycloak_domain: "keycloak.local"
+        keycloak_admin_user: admin
+        keycloak_admin_password: admin
+        keycloak_minimal_resources: true
