@@ -1,0 +1,15 @@
+---
+# Playbook to configure Keycloak for GitLab OIDC
+- name: Configure Keycloak for GitLab SSO
+  hosts: k3s_nodes
+  gather_facts: true
+
+  roles:
+    - role: keycloak-config
+      vars:
+        keycloak_realm_name: gitlab
+        keycloak_gitlab_client_id: gitlab
+        keycloak_gitlab_redirect_uris:
+          - "https://gitlab.local/*"
+          - "https://gitlab.local/users/auth/openid_connect/callback"
+        keycloak_create_test_user: true

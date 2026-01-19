@@ -1,0 +1,32 @@
+---
+# Keycloak configuration defaults
+
+# Keycloak connection settings (use ingress URL accessible from host)
+keycloak_url: "http://keycloak.local"
+keycloak_admin_user: admin
+keycloak_admin_password: admin
+
+# Realm settings
+keycloak_realm_name: gitlab
+keycloak_realm_display_name: "GitLab SSO"
+
+# GitLab OIDC client settings
+keycloak_gitlab_client_id: gitlab
+keycloak_gitlab_client_secret: "gitlab-keycloak-secret-key-2024"  # Fixed secret for idempotency
+keycloak_gitlab_redirect_uris:
+  - "https://gitlab.local/*"
+  - "https://gitlab.local/users/auth/openid_connect/callback"
+keycloak_gitlab_web_origins:
+  - "https://gitlab.local"
+
+# Token settings
+keycloak_access_token_lifespan: 300  # 5 minutes
+keycloak_refresh_token_lifespan: 1800  # 30 minutes
+
+# Default test user (optional)
+keycloak_create_test_user: true
+keycloak_test_user_username: testuser
+keycloak_test_user_password: testpass123
+keycloak_test_user_email: testuser@gitlab.local
+keycloak_test_user_first_name: Test
+keycloak_test_user_last_name: User

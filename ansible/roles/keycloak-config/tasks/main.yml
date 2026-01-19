@@ -1,0 +1,154 @@
+---
+# Keycloak configuration tasks using community.general.keycloak modules
+# Requires: ansible-galaxy collection install community.general
+
+- name: Wait for Keycloak to be ready
+  ansible.builtin.uri:
+    url: "{{ keycloak_url }}/realms/master"
+    method: GET
+    status_code: 200
+  register: keycloak_health
+  until: keycloak_health.status == 200
+  retries: 30
+  delay: 10
+
+- name: Create GitLab realm
+  community.general.keycloak_realm:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm_name }}"
+    display_name: "{{ keycloak_realm_display_name }}"
+    enabled: true
+    registration_allowed: false
+    login_with_email_allowed: true
+    duplicate_emails_allowed: false
+    reset_password_allowed: true
+    edit_username_allowed: false
+    brute_force_protected: true
+    access_token_lifespan: "{{ keycloak_access_token_lifespan }}"
+    sso_session_idle_timeout: "{{ keycloak_refresh_token_lifespan }}"
+    sso_session_max_lifespan: 36000
+    state: present
+
+- name: Create GitLab OIDC client
+  community.general.keycloak_client:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm_name }}"
+    client_id: "{{ keycloak_gitlab_client_id }}"
+    name: GitLab
+    description: "GitLab OIDC Client for SSO"
+    enabled: true
+    client_authenticator_type: client-secret
+    secret: "{{ keycloak_gitlab_client_secret }}"
+    redirect_uris: "{{ keycloak_gitlab_redirect_uris }}"
+    web_origins: "{{ keycloak_gitlab_web_origins }}"
+    protocol: openid-connect
+    public_client: false
+    standard_flow_enabled: true
+    implicit_flow_enabled: false
+    direct_access_grants_enabled: true
+    service_accounts_enabled: false
+    authorization_services_enabled: false
+    full_scope_allowed: true
+    default_client_scopes:
+      - openid
+      - profile
+      - email
+    optional_client_scopes:
+      - roles
+    protocol_mappers:
+      - name: email
+        protocol: openid-connect
+        protocolMapper: oidc-usermodel-property-mapper
+        config:
+          user.attribute: email
+          claim.name: email
+          jsonType.label: String
+          id.token.claim: "true"
+          access.token.claim: "true"
+          userinfo.token.claim: "true"
+      - name: groups
+        protocol: openid-connect
+        protocolMapper: oidc-group-membership-mapper
+        config:
+          full.path: "false"
+          claim.name: groups
+          id.token.claim: "true"
+          access.token.claim: "true"
+          userinfo.token.claim: "true"
+      - name: username
+        protocol: openid-connect
+        protocolMapper: oidc-usermodel-property-mapper
+        config:
+          user.attribute: username
+          claim.name: preferred_username
+          jsonType.label: String
+          id.token.claim: "true"
+          access.token.claim: "true"
+          userinfo.token.claim: "true"
+      - name: name
+        protocol: openid-connect
+        protocolMapper: oidc-full-name-mapper
+        config:
+          id.token.claim: "true"
+          access.token.claim: "true"
+          userinfo.token.claim: "true"
+    state: present
+  register: gitlab_client
+
+- name: Create test user
+  community.general.keycloak_user:
+    auth_keycloak_url: "{{ keycloak_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ keycloak_realm_name }}"
+    username: "{{ keycloak_test_user_username }}"
+    email: "{{ keycloak_test_user_email }}"
+    first_name: "{{ keycloak_test_user_first_name }}"
+    last_name: "{{ keycloak_test_user_last_name }}"
+    enabled: true
+    email_verified: true
+    credentials:
+      - type: password
+        value: "{{ keycloak_test_user_password }}"
+        temporary: false
+    state: present
+  when: keycloak_create_test_user
+
+- name: Create config directory
+  ansible.builtin.file:
+    path: /etc/keycloak-k3s
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Save OIDC configuration to file
+  ansible.builtin.template:
+    src: gitlab-oidc-config.yaml.j2
+    dest: /etc/keycloak-k3s/gitlab-oidc-config.yaml
+    mode: "0600"
+  become: true
+
+- name: Display GitLab OIDC configuration
+  ansible.builtin.debug:
+    msg:
+      - "============================================"
+      - "GitLab OIDC Configuration for Keycloak"
+      - "============================================"
+      - "Realm: {{ keycloak_realm_name }}"
+      - "Client ID: {{ keycloak_gitlab_client_id }}"
+      - "Client Secret: {{ keycloak_gitlab_client_secret }}"
+      - ""
+      - "OIDC Endpoints:"
+      - "  Issuer: {{ keycloak_url }}/realms/{{ keycloak_realm_name }}"
+      - "  Discovery: {{ keycloak_url }}/realms/{{ keycloak_realm_name }}/.well-known/openid-configuration"
+      - ""
+      - "Test User: {{ keycloak_test_user_username }} / {{ keycloak_test_user_password }}"
+      - ""
+      - "Config saved to: /etc/keycloak-k3s/gitlab-oidc-config.yaml"

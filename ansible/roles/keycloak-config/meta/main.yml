@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  author: rgatiyatullin
+  description: Configure Keycloak realm and OIDC client for GitLab
+  license: MIT
+  min_ansible_version: "2.10"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - focal
+        - jammy
+        - noble
+  galaxy_tags:
+    - keycloak
+    - gitlab
+    - oidc
+    - sso
+
+dependencies:
+#  - role: keycloak
