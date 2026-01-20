@@ -1,0 +1,14 @@
+---
+# Playbook to configure GitLab OIDC integration with Keycloak
+# This playbook should be run after:
+#   1. install-k3s.yml
+#   2. install-gitlab.yml
+#   3. install-keycloak.yml
+#   4. configure-keycloak.yml
+
+- name: Configure GitLab OIDC with Keycloak
+  hosts: k3s-server
+  become: false
+  
+  roles:
+    - role: gitlab-oidc

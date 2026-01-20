@@ -1,0 +1,27 @@
+---
+# Custom CoreDNS configuration for k3s
+# This ConfigMap is automatically loaded by k3s CoreDNS
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  # Custom server block for keycloak.local
+  keycloak.server: |
+    keycloak.local:53 {
+        hosts {
+            {{ keycloak_service_ip }} keycloak.local
+            fallthrough
+        }
+        whoami
+    }
+  # Custom server block for gitlab.gitlab.local
+  gitlab.server: |
+    gitlab.gitlab.local:53 {
+        hosts {
+            {{ gitlab_service_ip }} gitlab.gitlab.local
+            fallthrough
+        }
+        whoami
+    }

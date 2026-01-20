@@ -1,0 +1,214 @@
+---
+# GitLab OIDC integration tasks
+
+# First, configure cluster DNS to resolve keycloak.local and gitlab.gitlab.local
+- name: Get Keycloak service ClusterIP
+  ansible.builtin.command:
+    cmd: kubectl get svc keycloak-keycloakx-http -n keycloak -o jsonpath='{.spec.clusterIP}'
+  register: keycloak_svc
+  changed_when: false
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Set Keycloak service IP fact
+  ansible.builtin.set_fact:
+    keycloak_service_ip: "{{ keycloak_svc.stdout }}"
+
+- name: Get GitLab webservice ClusterIP
+  ansible.builtin.command:
+    cmd: kubectl get svc gitlab-webservice-default -n gitlab -o jsonpath='{.spec.clusterIP}'
+  register: gitlab_svc
+  changed_when: false
+  failed_when: false
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Set GitLab service IP fact
+  ansible.builtin.set_fact:
+    gitlab_service_ip: "{{ gitlab_svc.stdout | default('127.0.0.1') }}"
+
+- name: Create GitLab config directory
+  ansible.builtin.file:
+    path: /etc/gitlab-k3s
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Create CoreDNS custom ConfigMap manifest
+  ansible.builtin.template:
+    src: coredns-custom.yaml.j2
+    dest: /etc/gitlab-k3s/coredns-custom.yaml
+    mode: "0644"
+  become: true
+  register: coredns_custom_template
+
+- name: Apply CoreDNS custom ConfigMap
+  ansible.builtin.command:
+    cmd: kubectl apply -f /etc/gitlab-k3s/coredns-custom.yaml
+  register: apply_coredns_custom
+  changed_when: "'created' in apply_coredns_custom.stdout"
+  when: coredns_custom_template is changed
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Ensure CoreDNS custom ConfigMap exists
+  ansible.builtin.command:
+    cmd: kubectl apply -f /etc/gitlab-k3s/coredns-custom.yaml
+  register: ensure_coredns
+  changed_when: "'created' in ensure_coredns.stdout"
+  when: coredns_custom_template is not changed
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Restart CoreDNS to pick up custom config
+  ansible.builtin.command:
+    cmd: kubectl rollout restart deployment/coredns -n kube-system
+  when: coredns_custom_template is changed
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Wait for CoreDNS to be ready
+  ansible.builtin.command:
+    cmd: kubectl rollout status deployment/coredns -n kube-system --timeout=120s
+  changed_when: false
+  when: coredns_custom_template is changed
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+# Now configure GitLab OIDC
+- name: Check if GitLab is installed
+  ansible.builtin.command:
+    cmd: helm status {{ gitlab_oidc_release_name }} -n {{ gitlab_oidc_namespace }}
+  register: gitlab_status
+  changed_when: false
+  failed_when: false
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Fail if GitLab is not installed
+  ansible.builtin.fail:
+    msg: "GitLab is not installed. Please run the gitlab role first."
+  when: gitlab_status.rc != 0
+
+- name: Create OIDC secret manifest
+  ansible.builtin.template:
+    src: oidc-secret.yaml.j2
+    dest: /etc/gitlab-k3s/oidc-secret.yaml
+    mode: "0600"
+  become: true
+  register: oidc_secret_template
+
+- name: Apply OIDC secret to Kubernetes
+  ansible.builtin.command:
+    cmd: kubectl apply -f /etc/gitlab-k3s/oidc-secret.yaml
+  register: apply_secret
+  changed_when: "'created' in apply_secret.stdout"
+  when: oidc_secret_template is changed
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Ensure OIDC secret exists
+  ansible.builtin.command:
+    cmd: kubectl apply -f /etc/gitlab-k3s/oidc-secret.yaml
+  register: ensure_secret
+  changed_when: "'created' in ensure_secret.stdout"
+  when: oidc_secret_template is not changed
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Create OIDC Helm values file
+  ansible.builtin.template:
+    src: oidc-values.yaml.j2
+    dest: /etc/gitlab-k3s/oidc-values.yaml
+    mode: "0644"
+  become: true
+  register: oidc_values_template
+
+- name: Check if GitLab already has OIDC configured
+  ansible.builtin.command:
+    cmd: >
+      helm get values {{ gitlab_oidc_release_name }} -n {{ gitlab_oidc_namespace }} -o yaml
+  register: current_helm_values
+  changed_when: false
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Determine if OIDC is already configured
+  ansible.builtin.set_fact:
+    oidc_already_configured: "{{ 'omniauth' in current_helm_values.stdout }}"
+
+- name: Upgrade GitLab with OIDC configuration
+  ansible.builtin.command:
+    cmd: >
+      helm upgrade {{ gitlab_oidc_release_name }}
+      gitlab/gitlab
+      -n {{ gitlab_oidc_namespace }}
+      -f /etc/gitlab-k3s/gitlab-values.yaml
+      -f /etc/gitlab-k3s/oidc-values.yaml
+      --version {{ gitlab_oidc_chart_version }}
+      --wait
+      --timeout 15m
+  register: helm_upgrade
+  when: oidc_values_template is changed or oidc_secret_template is changed or not oidc_already_configured
+  changed_when: helm_upgrade.rc == 0
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Wait for GitLab webservice to be ready
+  ansible.builtin.command:
+    cmd: >
+      kubectl wait --for=condition=available deployment/{{ gitlab_oidc_release_name }}-webservice-default
+      -n {{ gitlab_oidc_namespace }} --timeout=600s
+  register: wait_result
+  changed_when: false
+  when: helm_upgrade is changed
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Verify OIDC configuration applied
+  ansible.builtin.command:
+    cmd: >
+      kubectl get secret {{ gitlab_oidc_secret_name }} -n {{ gitlab_oidc_namespace }} -o name
+  register: verify_secret
+  changed_when: false
+  failed_when: verify_secret.rc != 0
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Display OIDC integration status
+  ansible.builtin.debug:
+    msg:
+      - "============================================"
+      - "GitLab OIDC Integration Complete"
+      - "============================================"
+      - ""
+      - "GitLab URL: https://{{ gitlab_oidc_domain }}"
+      - "Keycloak Realm: {{ gitlab_oidc_realm }}"
+      - "OIDC Provider: {{ gitlab_oidc_provider_label }}"
+      - ""
+      - "Cluster DNS configured:"
+      - "  - keycloak.local -> {{ keycloak_service_ip }}"
+      - "  - gitlab.gitlab.local -> {{ gitlab_service_ip }}"
+      - ""
+      - "User Mapping:"
+      - "  - Users logging in via Keycloak will be auto-created in GitLab"
+      - "  - Username mapped from: {{ gitlab_oidc_uid_field }}"
+      - "  - Profile sync enabled: {{ gitlab_oidc_sync_profile }}"
+      - ""
+      - "To test:"
+      - "  1. Go to https://{{ gitlab_oidc_domain }}"
+      - "  2. Click '{{ gitlab_oidc_provider_label }}'"
+      - "  3. Login with Keycloak user (testuser/testpass123)"

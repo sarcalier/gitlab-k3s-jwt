@@ -1,0 +1,43 @@
+---
+# GitLab OIDC integration defaults
+
+# Keycloak connection settings (should match keycloak-config role)
+gitlab_oidc_keycloak_url: "http://keycloak.local"
+gitlab_oidc_realm: "gitlab"
+
+# GitLab OIDC client credentials (should match keycloak-config role)
+gitlab_oidc_client_id: "gitlab"
+gitlab_oidc_client_secret: "gitlab-keycloak-secret-key-2024"
+
+# GitLab settings
+gitlab_oidc_namespace: "gitlab"
+gitlab_oidc_release_name: "gitlab"
+gitlab_oidc_domain: "gitlab.gitlab.local"
+gitlab_oidc_chart_version: "9.8.0"
+
+# OIDC Provider configuration
+gitlab_oidc_provider_name: "openid_connect"
+gitlab_oidc_provider_label: "Login with Keycloak"
+gitlab_oidc_provider_icon: "https://www.keycloak.org/resources/images/keycloak_icon_64px.svg"
+
+# OIDC scopes
+gitlab_oidc_scopes:
+  - openid
+  - profile
+  - email
+
+# User attribute mapping
+gitlab_oidc_uid_field: "preferred_username"
+
+# Auto-create users on first login
+gitlab_oidc_allow_single_sign_on: true
+gitlab_oidc_block_auto_created_users: false
+
+# Sync profile from provider
+gitlab_oidc_sync_profile: true
+gitlab_oidc_sync_profile_attributes:
+  - email
+  - name
+
+# Secret name for OIDC provider config
+gitlab_oidc_secret_name: "gitlab-keycloak-oidc"

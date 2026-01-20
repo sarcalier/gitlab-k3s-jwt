@@ -1,0 +1,27 @@
+# GitLab OIDC Helm values overlay
+# Managed by Ansible
+# This file extends the base GitLab values with OIDC configuration
+
+global:
+  appConfig:
+    omniauth:
+      enabled: true
+      autoSignInWithProvider: 
+      allowSingleSignOn:
+        - {{ gitlab_oidc_provider_name }}
+      syncProfileFromProvider:
+{% if gitlab_oidc_sync_profile %}
+        - {{ gitlab_oidc_provider_name }}
+{% endif %}
+      syncProfileAttributes:
+{% for attr in gitlab_oidc_sync_profile_attributes %}
+        - {{ attr }}
+{% endfor %}
+      blockAutoCreatedUsers: {{ gitlab_oidc_block_auto_created_users | lower }}
+      autoLinkLdapUser: false
+      autoLinkSamlUser: false
+      autoLinkUser:
+        - {{ gitlab_oidc_provider_name }}
+      providers:
+        - secret: {{ gitlab_oidc_secret_name }}
+          key: provider

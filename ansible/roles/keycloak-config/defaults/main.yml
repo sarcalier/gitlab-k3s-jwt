@@ -14,10 +14,10 @@ keycloak_realm_display_name: "GitLab SSO"
 keycloak_gitlab_client_id: gitlab
 keycloak_gitlab_client_secret: "gitlab-keycloak-secret-key-2024"  # Fixed secret for idempotency
 keycloak_gitlab_redirect_uris:
-  - "https://gitlab.local/*"
-  - "https://gitlab.local/users/auth/openid_connect/callback"
+  - "https://gitlab.gitlab.local/*"
+  - "https://gitlab.gitlab.local/users/auth/openid_connect/callback"
 keycloak_gitlab_web_origins:
-  - "https://gitlab.local"
+  - "https://gitlab.gitlab.local"
 
 # Token settings
 keycloak_access_token_lifespan: 300  # 5 minutes
