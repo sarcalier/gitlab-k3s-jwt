@@ -1,0 +1,470 @@
+---
+# k3s OIDC integration tasks
+
+# First, configure TLS for Keycloak (required for k8s OIDC)
+
+- name: Create k3s-oidc config directory
+  ansible.builtin.file:
+    path: /etc/k3s-oidc
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Check if Keycloak CA already exists
+  ansible.builtin.stat:
+    path: /etc/k3s-oidc/keycloak-ca.crt
+  register: keycloak_ca_stat
+  become: true
+
+- name: Generate Keycloak CA private key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out /etc/k3s-oidc/keycloak-ca.key 4096
+    creates: /etc/k3s-oidc/keycloak-ca.key
+  become: true
+  when: not keycloak_ca_stat.stat.exists
+
+- name: Generate Keycloak CA certificate
+  ansible.builtin.command:
+    cmd: >
+      openssl req -x509 -new -nodes
+      -key /etc/k3s-oidc/keycloak-ca.key
+      -sha256 -days 3650
+      -out /etc/k3s-oidc/keycloak-ca.crt
+      -subj "/CN=Keycloak CA/O=k3s-oidc"
+    creates: /etc/k3s-oidc/keycloak-ca.crt
+  become: true
+  when: not keycloak_ca_stat.stat.exists
+
+- name: Generate Keycloak server private key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out /etc/k3s-oidc/keycloak-tls.key 2048
+    creates: /etc/k3s-oidc/keycloak-tls.key
+  become: true
+  when: not keycloak_ca_stat.stat.exists
+
+- name: Create OpenSSL config for SAN
+  ansible.builtin.copy:
+    dest: /etc/k3s-oidc/keycloak-openssl.cnf
+    content: |
+      [req]
+      distinguished_name = req_distinguished_name
+      req_extensions = v3_req
+      prompt = no
+      
+      [req_distinguished_name]
+      CN = keycloak.local
+      
+      [v3_req]
+      keyUsage = keyEncipherment, dataEncipherment
+      extendedKeyUsage = serverAuth
+      subjectAltName = @alt_names
+      
+      [alt_names]
+      DNS.1 = keycloak.local
+      DNS.2 = keycloak-keycloakx-http.keycloak.svc.cluster.local
+      IP.1 = {{ ansible_host }}
+    mode: "0644"
+  become: true
+
+- name: Generate Keycloak CSR
+  ansible.builtin.command:
+    cmd: >
+      openssl req -new
+      -key /etc/k3s-oidc/keycloak-tls.key
+      -out /etc/k3s-oidc/keycloak-tls.csr
+      -config /etc/k3s-oidc/keycloak-openssl.cnf
+    creates: /etc/k3s-oidc/keycloak-tls.csr
+  become: true
+  when: not keycloak_ca_stat.stat.exists
+
+- name: Sign Keycloak certificate with CA
+  ansible.builtin.command:
+    cmd: >
+      openssl x509 -req
+      -in /etc/k3s-oidc/keycloak-tls.csr
+      -CA /etc/k3s-oidc/keycloak-ca.crt
+      -CAkey /etc/k3s-oidc/keycloak-ca.key
+      -CAcreateserial
+      -out /etc/k3s-oidc/keycloak-tls.crt
+      -days 3650 -sha256
+      -extfile /etc/k3s-oidc/keycloak-openssl.cnf
+      -extensions v3_req
+    creates: /etc/k3s-oidc/keycloak-tls.crt
+  become: true
+  when: not keycloak_ca_stat.stat.exists
+
+- name: Read Keycloak TLS certificate
+  ansible.builtin.slurp:
+    src: /etc/k3s-oidc/keycloak-tls.crt
+  register: keycloak_tls_cert
+  become: true
+
+- name: Read Keycloak TLS key
+  ansible.builtin.slurp:
+    src: /etc/k3s-oidc/keycloak-tls.key
+  register: keycloak_tls_key
+  become: true
+
+- name: Set TLS facts
+  ansible.builtin.set_fact:
+    keycloak_tls_cert_b64: "{{ keycloak_tls_cert.content }}"
+    keycloak_tls_key_b64: "{{ keycloak_tls_key.content }}"
+
+- name: Create Keycloak TLS secret manifest
+  ansible.builtin.template:
+    src: keycloak-tls-secret.yaml.j2
+    dest: /etc/k3s-oidc/keycloak-tls-secret.yaml
+    mode: "0600"
+  become: true
+
+- name: Apply Keycloak TLS secret
+  ansible.builtin.command:
+    cmd: kubectl apply -f /etc/k3s-oidc/keycloak-tls-secret.yaml
+  register: apply_tls_secret
+  changed_when: "'created' in apply_tls_secret.stdout or 'configured' in apply_tls_secret.stdout"
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Patch Keycloak ingress with TLS
+  ansible.builtin.command:
+    cmd: >
+      kubectl patch ingress keycloak-keycloakx -n keycloak --type=merge -p
+      '{"spec":{"tls":[{"hosts":["keycloak.local"],"secretName":"keycloak-tls"}]}}'
+  register: patch_ingress
+  changed_when: "'patched' in patch_ingress.stdout"
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Restart Keycloak to apply HTTPS hostname
+  ansible.builtin.command:
+    cmd: kubectl rollout restart statefulset/keycloak-keycloakx -n keycloak
+  when: patch_ingress is changed or apply_tls_secret is changed
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Wait for Keycloak rollout
+  ansible.builtin.command:
+    cmd: kubectl rollout status statefulset/keycloak-keycloakx -n keycloak --timeout=300s
+  when: patch_ingress is changed or apply_tls_secret is changed
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+# Now configure Keycloak with Kubernetes client and group
+
+- name: Wait for Keycloak to be ready
+  ansible.builtin.uri:
+    url: "{{ k3s_oidc_keycloak_internal_url }}/realms/{{ k3s_oidc_realm }}"
+    method: GET
+    status_code: 200
+  register: keycloak_health
+  until: keycloak_health.status == 200
+  retries: 30
+  delay: 10
+
+- name: Create Kubernetes OIDC client in Keycloak
+  community.general.keycloak_client:
+    auth_keycloak_url: "{{ k3s_oidc_keycloak_internal_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ k3s_oidc_realm }}"
+    client_id: "{{ k3s_oidc_client_id }}"
+    name: Kubernetes
+    description: "Kubernetes API Server OIDC Client"
+    enabled: true
+    client_authenticator_type: client-secret
+    secret: "{{ k3s_oidc_client_secret }}"
+    redirect_uris:
+      - "http://localhost:8000"
+      - "http://localhost:18000"
+    web_origins:
+      - "*"
+    protocol: openid-connect
+    public_client: true
+    standard_flow_enabled: true
+    implicit_flow_enabled: false
+    direct_access_grants_enabled: true
+    service_accounts_enabled: false
+    authorization_services_enabled: false
+    full_scope_allowed: true
+    default_client_scopes:
+      - openid
+      - profile
+      - email
+    optional_client_scopes:
+      - roles
+    protocol_mappers:
+      - name: groups
+        protocol: openid-connect
+        protocolMapper: oidc-group-membership-mapper
+        config:
+          full.path: "false"
+          claim.name: groups
+          id.token.claim: "true"
+          access.token.claim: "true"
+          userinfo.token.claim: "true"
+      - name: username
+        protocol: openid-connect
+        protocolMapper: oidc-usermodel-property-mapper
+        config:
+          user.attribute: username
+          claim.name: preferred_username
+          jsonType.label: String
+          id.token.claim: "true"
+          access.token.claim: "true"
+          userinfo.token.claim: "true"
+      - name: audience
+        protocol: openid-connect
+        protocolMapper: oidc-audience-mapper
+        config:
+          included.client.audience: "{{ k3s_oidc_client_id }}"
+          id.token.claim: "true"
+          access.token.claim: "true"
+    state: present
+
+- name: Create deployers group in Keycloak
+  community.general.keycloak_group:
+    auth_keycloak_url: "{{ k3s_oidc_keycloak_internal_url }}"
+    auth_realm: master
+    auth_username: "{{ keycloak_admin_user }}"
+    auth_password: "{{ keycloak_admin_password }}"
+    realm: "{{ k3s_oidc_realm }}"
+    name: "{{ k3s_oidc_deployer_group }}"
+    state: present
+  register: deployer_group
+
+- name: Get admin token for user operations
+  ansible.builtin.uri:
+    url: "{{ k3s_oidc_keycloak_internal_url }}/realms/master/protocol/openid-connect/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      grant_type: password
+      client_id: admin-cli
+      username: "{{ keycloak_admin_user }}"
+      password: "{{ keycloak_admin_password }}"
+    status_code: 200
+  register: keycloak_token
+
+- name: Get test user ID
+  ansible.builtin.uri:
+    url: "{{ k3s_oidc_keycloak_internal_url }}/admin/realms/{{ k3s_oidc_realm }}/users?username={{ keycloak_test_user_username | default('testuser') }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ keycloak_token.json.access_token }}"
+    status_code: 200
+  register: test_user_lookup
+  when: keycloak_create_test_user | default(true)
+
+- name: Get deployer group ID
+  ansible.builtin.uri:
+    url: "{{ k3s_oidc_keycloak_internal_url }}/admin/realms/{{ k3s_oidc_realm }}/groups?search={{ k3s_oidc_deployer_group }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ keycloak_token.json.access_token }}"
+    status_code: 200
+  register: deployer_group_lookup
+
+- name: Get test user's current groups
+  ansible.builtin.uri:
+    url: "{{ k3s_oidc_keycloak_internal_url }}/admin/realms/{{ k3s_oidc_realm }}/users/{{ test_user_lookup.json[0].id }}/groups"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ keycloak_token.json.access_token }}"
+    status_code: 200
+  register: user_groups
+  when:
+    - keycloak_create_test_user | default(true)
+    - test_user_lookup.json | length > 0
+
+- name: Check if user already in deployers group
+  ansible.builtin.set_fact:
+    user_in_deployers_group: "{{ user_groups.json | selectattr('name', 'equalto', k3s_oidc_deployer_group) | list | length > 0 }}"
+  when:
+    - keycloak_create_test_user | default(true)
+    - test_user_lookup.json | length > 0
+    - user_groups.json is defined
+
+- name: Add test user to deployers group
+  ansible.builtin.uri:
+    url: "{{ k3s_oidc_keycloak_internal_url }}/admin/realms/{{ k3s_oidc_realm }}/users/{{ test_user_lookup.json[0].id }}/groups/{{ deployer_group_lookup.json[0].id }}"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ keycloak_token.json.access_token }}"
+    status_code: [200, 204]
+  when:
+    - keycloak_create_test_user | default(true)
+    - test_user_lookup.json | length > 0
+    - deployer_group_lookup.json | length > 0
+    - not (user_in_deployers_group | default(false))
+
+# Now configure k3s API server with OIDC
+
+- name: Check current k3s config
+  ansible.builtin.slurp:
+    src: /etc/rancher/k3s/config.yaml
+  register: current_k3s_config
+  become: true
+
+- name: Check if OIDC already configured in k3s
+  ansible.builtin.set_fact:
+    k3s_oidc_configured: "{{ 'oidc-issuer-url' in (current_k3s_config.content | b64decode) }}"
+
+- name: Create k3s OIDC config snippet
+  ansible.builtin.template:
+    src: k3s-oidc-config.yaml.j2
+    dest: /etc/rancher/k3s/oidc-config.yaml
+    mode: "0600"
+  become: true
+  register: oidc_config_template
+
+- name: Append OIDC config to k3s config if not present
+  ansible.builtin.blockinfile:
+    path: /etc/rancher/k3s/config.yaml
+    block: |
+      # OIDC Authentication for Kubernetes API server
+      kube-apiserver-arg:
+        - "oidc-issuer-url={{ k3s_oidc_issuer_url }}"
+        - "oidc-client-id={{ k3s_oidc_client_id }}"
+        - "oidc-username-claim={{ k3s_oidc_username_claim }}"
+        - "oidc-groups-claim={{ k3s_oidc_groups_claim }}"
+        - "oidc-ca-file=/etc/k3s-oidc/keycloak-ca.crt"
+    marker: "# {mark} ANSIBLE MANAGED OIDC CONFIG"
+    insertafter: EOF
+  become: true
+  register: k3s_config_updated
+  notify: Restart k3s
+  when: not k3s_oidc_configured
+
+- name: Force restart k3s if OIDC config changed
+  ansible.builtin.meta: flush_handlers
+  when: k3s_config_updated is changed
+
+- name: Wait for k3s API server to be ready
+  ansible.builtin.command:
+    cmd: kubectl get nodes
+  register: k3s_ready
+  until: k3s_ready.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+# Apply RBAC resources
+
+- name: Create RBAC manifest
+  ansible.builtin.template:
+    src: rbac-deployer.yaml.j2
+    dest: /etc/k3s-oidc/rbac-deployer.yaml
+    mode: "0644"
+  become: true
+  register: rbac_template
+
+- name: Apply RBAC resources
+  ansible.builtin.command:
+    cmd: kubectl apply -f /etc/k3s-oidc/rbac-deployer.yaml
+  register: apply_rbac
+  changed_when: "'created' in apply_rbac.stdout"
+  when: rbac_template is changed
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Ensure RBAC resources exist
+  ansible.builtin.command:
+    cmd: kubectl apply -f /etc/k3s-oidc/rbac-deployer.yaml
+  register: ensure_rbac
+  changed_when: "'created' in ensure_rbac.stdout"
+  when: rbac_template is not changed
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+# Generate GitLab CI/CD template for JWT-based deployments
+
+- name: Generate GitLab CI deploy template
+  ansible.builtin.template:
+    src: gitlab-ci-deploy.yml.j2
+    dest: /etc/k3s-oidc/gitlab-ci-deploy.yml
+    mode: "0644"
+  become: true
+
+- name: Generate JWT test script
+  ansible.builtin.template:
+    src: test-jwt-auth.sh.j2
+    dest: /etc/k3s-oidc/test-jwt-auth.sh
+    mode: "0755"
+  become: true
+
+- name: Get k3s CA certificate (base64)
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/k3s/server/tls/server-ca.crt
+  register: k3s_ca_cert_file
+  become: true
+
+- name: Save k3s CA certificate
+  ansible.builtin.copy:
+    content: "{{ k3s_ca_cert_file.content | b64decode }}"
+    dest: /etc/k3s-oidc/k3s-ca.crt
+    mode: "0644"
+  become: true
+
+- name: Display k3s OIDC integration status
+  ansible.builtin.debug:
+    msg:
+      - "============================================"
+      - "k3s OIDC Integration Complete"
+      - "============================================"
+      - ""
+      - "Keycloak OIDC Configuration:"
+      - "  Issuer: {{ k3s_oidc_issuer_url }}"
+      - "  Client ID: {{ k3s_oidc_client_id }}"
+      - "  Groups Claim: {{ k3s_oidc_groups_claim }}"
+      - ""
+      - "RBAC Configuration:"
+      - "  Namespace: {{ k3s_oidc_deploy_namespace }}"
+      - "  Role: {{ k3s_oidc_deployer_role }}"
+      - "  Group: {{ k3s_oidc_deployer_group }}"
+      - ""
+      - "Test user '{{ keycloak_test_user_username | default('testuser') }}' added to group '{{ k3s_oidc_deployer_group }}'"
+      - ""
+      - "============================================"
+      - "GitLab CI/CD Integration (JWT tokens)"
+      - "============================================"
+      - ""
+      - "1. Add CI/CD variables in GitLab project:"
+      - "   KEYCLOAK_URL: {{ k3s_oidc_keycloak_url }}"
+      - "   KEYCLOAK_REALM: {{ k3s_oidc_realm }}"
+      - "   KEYCLOAK_CLIENT_ID: {{ k3s_oidc_client_id }}"
+      - "   K8S_API_SERVER: {{ k3s_api_server_url }}"
+      - "   KEYCLOAK_PASSWORD: (user's Keycloak password, masked)"
+      - ""
+      - "2. Copy GitLab CI template to your project:"
+      - "   scp {{ ansible_host }}:/etc/k3s-oidc/gitlab-ci-deploy.yml .gitlab-ci.yml"
+      - ""
+      - "3. User must be in '{{ k3s_oidc_deployer_group }}' Keycloak group to deploy"
+      - ""
+      - "TLS Configuration:"
+      - "  Keycloak HTTPS: {{ k3s_oidc_keycloak_url }}"
+      - "  Keycloak Internal: {{ k3s_oidc_keycloak_internal_url }}"
+      - "  CA Certificate: /etc/k3s-oidc/keycloak-ca.crt"
+      - ""
+      - "To get JWT token (from k3s server):"
+      - "  curl -X POST {{ k3s_oidc_keycloak_internal_url }}/realms/{{ k3s_oidc_realm }}/protocol/openid-connect/token \\"
+      - "    -d 'grant_type=password' \\"
+      - "    -d 'client_id={{ k3s_oidc_client_id }}' \\"
+      - "    -d 'username=USER' \\"
+      - "    -d 'password=PASS' \\"
+      - "    -d 'scope=openid groups'"
+      - ""
+      - "To test (from k3s server):"
+      - "  /etc/k3s-oidc/test-jwt-auth.sh testuser testpass123"
+      - ""
+      - "To use token with kubectl:"
+      - "  kubectl --token=JWT_TOKEN --server={{ k3s_api_server_url }} --insecure-skip-tls-verify get pods -n {{ k3s_oidc_deploy_namespace }}"

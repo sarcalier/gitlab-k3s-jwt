@@ -1,0 +1,18 @@
+---
+# Playbook to configure k3s API server OIDC integration with Keycloak
+# This playbook should be run after:
+#   1. install-k3s.yml
+#   2. install-keycloak.yml
+#   3. configure-keycloak.yml
+
+- name: Configure k3s OIDC with Keycloak
+  hosts: k3s-server
+  become: false
+  
+  vars:
+    # Override these as needed
+    keycloak_create_test_user: true
+    keycloak_test_user_username: testuser
+  
+  roles:
+    - role: k3s-oidc

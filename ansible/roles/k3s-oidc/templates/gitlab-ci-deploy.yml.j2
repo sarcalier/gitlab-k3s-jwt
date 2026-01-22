@@ -1,0 +1,115 @@
+# GitLab CI/CD template for deploying to Kubernetes using Keycloak JWT tokens
+# Copy this to your project's .gitlab-ci.yml or include it
+#
+# Required CI/CD Variables (set in GitLab project/group settings):
+#   KEYCLOAK_URL: {{ k3s_oidc_keycloak_url }}
+#   KEYCLOAK_REALM: {{ k3s_oidc_realm }}
+#   KEYCLOAK_CLIENT_ID: {{ k3s_oidc_client_id }}
+#   K8S_API_SERVER: {{ k3s_api_server_url }}
+#
+# For user-based deployment (user must be in '{{ k3s_oidc_deployer_group }}' group):
+#   KEYCLOAK_USERNAME: $GITLAB_USER_LOGIN (or specific user)
+#   KEYCLOAK_PASSWORD: (stored as masked variable)
+
+variables:
+  DEPLOY_NAMESPACE: {{ k3s_oidc_deploy_namespace }}
+  KUBECTL_VERSION: "1.29.0"
+
+.get_keycloak_token: &get_keycloak_token
+  - |
+    echo "Getting JWT token from Keycloak for user: ${KEYCLOAK_USERNAME:-$GITLAB_USER_LOGIN}"
+    TOKEN_RESPONSE=$(curl -s -X POST \
+      "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -d "grant_type=password" \
+      -d "client_id=${KEYCLOAK_CLIENT_ID}" \
+      -d "username=${KEYCLOAK_USERNAME:-$GITLAB_USER_LOGIN}" \
+      -d "password=${KEYCLOAK_PASSWORD}" \
+      -d "scope=openid groups")
+    
+    export K8S_TOKEN=$(echo $TOKEN_RESPONSE | jq -r '.access_token')
+    
+    if [ "$K8S_TOKEN" == "null" ] || [ -z "$K8S_TOKEN" ]; then
+      echo "Failed to get token from Keycloak"
+      echo "Response: $TOKEN_RESPONSE"
+      exit 1
+    fi
+    
+    echo "Successfully obtained JWT token"
+    
+    # Decode and show token info (for debugging)
+    echo "Token claims:"
+    echo $K8S_TOKEN | cut -d'.' -f2 | base64 -d 2>/dev/null | jq -r '.preferred_username, .groups' || true
+
+.setup_kubectl: &setup_kubectl
+  - |
+    echo "Setting up kubectl with JWT token authentication"
+    
+    # Install kubectl if not present
+    if ! command -v kubectl &> /dev/null; then
+      curl -LO "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+      chmod +x kubectl
+      mv kubectl /usr/local/bin/
+    fi
+    
+    # Configure kubectl to use JWT token
+    kubectl config set-cluster k3s \
+      --server="${K8S_API_SERVER}" \
+      --insecure-skip-tls-verify=true
+    
+    kubectl config set-credentials oidc-user \
+      --token="${K8S_TOKEN}"
+    
+    kubectl config set-context k3s-deploy \
+      --cluster=k3s \
+      --user=oidc-user \
+      --namespace="${DEPLOY_NAMESPACE}"
+    
+    kubectl config use-context k3s-deploy
+    
+    echo "kubectl configured successfully"
+
+.verify_access: &verify_access
+  - |
+    echo "Verifying access to namespace: ${DEPLOY_NAMESPACE}"
+    kubectl auth can-i create deployments --namespace ${DEPLOY_NAMESPACE}
+    kubectl auth can-i create services --namespace ${DEPLOY_NAMESPACE}
+    echo "Access verified!"
+
+# Base job for deployments
+.deploy_base:
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache curl jq
+    - *get_keycloak_token
+    - *setup_kubectl
+    - *verify_access
+
+# Example deployment job
+deploy_to_k8s:
+  extends: .deploy_base
+  stage: deploy
+  script:
+    - echo "Deploying to ${DEPLOY_NAMESPACE} as user ${KEYCLOAK_USERNAME:-$GITLAB_USER_LOGIN}"
+    - kubectl get pods -n ${DEPLOY_NAMESPACE}
+    # Add your deployment commands here:
+    # - kubectl apply -f k8s/
+    # - kubectl set image deployment/myapp myapp=${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHA}
+  only:
+    - main
+    - master
+  environment:
+    name: production
+    kubernetes:
+      namespace: {{ k3s_oidc_deploy_namespace }}
+
+# Example: Deploy with user's own credentials (manual trigger)
+deploy_manual:
+  extends: .deploy_base
+  stage: deploy
+  script:
+    - echo "Manual deployment by ${GITLAB_USER_NAME}"
+    - kubectl get pods -n ${DEPLOY_NAMESPACE}
+  when: manual
+  only:
+    - main

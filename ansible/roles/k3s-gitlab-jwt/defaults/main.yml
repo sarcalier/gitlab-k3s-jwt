@@ -1,0 +1,29 @@
+---
+# k3s GitLab JWT integration defaults
+
+# GitLab instance URL (OIDC issuer)
+k3s_gitlab_url: "https://gitlab.gitlab.local"
+
+# GitLab OIDC client ID (usually same as issuer URL)
+k3s_gitlab_client_id: "https://gitlab.gitlab.local"
+
+# Claims configuration
+k3s_gitlab_username_claim: "user_email"
+k3s_gitlab_groups_claim: "groups_direct"
+
+# Namespace for GitLab deployments
+k3s_gitlab_deploy_namespace: "app-deploy"
+
+# GitLab group that can deploy (should match Keycloak group synced to GitLab)
+k3s_gitlab_deployer_group: "k8s-deployers"
+
+# List of specific users to grant access (fallback when groups are not in CI_JOB_JWT)
+# GitLab CI_JOB_JWT tokens don't include groups_direct claim by design
+# Format: ["gitlab:user1@example.com", "gitlab:user2@example.com"]
+k3s_gitlab_deployer_users: []
+
+# Role name for deployers
+k3s_gitlab_deployer_role: "gitlab-deployer"
+
+# K3s API server URL
+k3s_api_server_url: "https://{{ ansible_host | default('10.10.1.70') }}:6443"

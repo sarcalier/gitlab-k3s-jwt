@@ -159,7 +159,7 @@
   environment:
     KUBECONFIG: /etc/rancher/k3s/k3s.yaml
 
-- name: Upgrade GitLab via Helm (if version changed)
+- name: Upgrade GitLab via Helm (if version changed or values changed)
   ansible.builtin.command: >
     helm upgrade {{ gitlab_release_name }} gitlab/gitlab
     --namespace {{ gitlab_namespace }}
@@ -169,11 +169,22 @@
   become: true
   when:
     - gitlab_status.stdout == "deployed"
-    - gitlab_installed_version.stdout != gitlab_chart_version
+    - gitlab_installed_version.stdout != gitlab_chart_version or gitlab_values_template is changed
   register: gitlab_upgrade
   changed_when: gitlab_upgrade.rc == 0
   environment:
     KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Restart GitLab runner to apply new configuration
+  ansible.builtin.command: >
+    k3s kubectl rollout restart deployment/{{ gitlab_release_name }}-gitlab-runner
+    -n {{ gitlab_namespace }}
+  become: true
+  when:
+    - gitlab_status.stdout == "deployed"
+    - gitlab_runner_install | bool
+    - gitlab_values_template is changed or (gitlab_upgrade is defined and gitlab_upgrade is changed)
+  changed_when: true
 
 - name: Wait for GitLab to be ready
   ansible.builtin.shell: |

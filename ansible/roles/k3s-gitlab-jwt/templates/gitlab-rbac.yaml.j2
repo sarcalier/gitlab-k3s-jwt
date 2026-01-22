@@ -1,0 +1,90 @@
+---
+# RBAC for GitLab CI/CD deployments
+# Users in GitLab group '{{ k3s_gitlab_deployer_group }}' can deploy to namespace '{{ k3s_gitlab_deploy_namespace }}'
+
+# Ensure namespace exists
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ k3s_gitlab_deploy_namespace }}
+  labels:
+    managed-by: ansible
+    gitlab-deploy: enabled
+---
+# Role for GitLab deployers
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ k3s_gitlab_deployer_role }}
+  namespace: {{ k3s_gitlab_deploy_namespace }}
+rules:
+  # Deployments, ReplicaSets, StatefulSets, DaemonSets
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pods and logs
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "pods/portforward"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Services, ConfigMaps, Secrets
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Ingresses
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # PersistentVolumeClaims
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Jobs, CronJobs
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Events (read-only)
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # HorizontalPodAutoscalers
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# RoleBinding for GitLab group
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ k3s_gitlab_deployer_role }}-binding
+  namespace: {{ k3s_gitlab_deploy_namespace }}
+subjects:
+  # Bind to GitLab group (synced from Keycloak)
+  # Note: k3s adds 'gitlab:' prefix to groups, so we need to include it
+  # 
+  # GitLab ID tokens can include groups_direct claim (GitLab 16.11+)
+  # Feature flag ci_jwt_groups_direct must be enabled in GitLab 17.3+
+  # See: https://docs.gitlab.com/ci/secrets/id_token_authentication/
+  #
+  # Kubernetes supports groups in JWT via oidc-groups-claim
+  # See: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#using-flags
+  #
+  # If groups_direct is present in token, Kubernetes will extract groups automatically
+  # If groups_direct is NOT present, we need users as fallback
+  - kind: Group
+    name: gitlab:{{ k3s_gitlab_deployer_group }}
+    apiGroup: rbac.authorization.k8s.io
+{% if k3s_gitlab_deployer_users | default([]) | length > 0 %}
+  # Fallback: Include users when groups_direct is not available in ID token
+  # To enable groups_direct in GitLab 17.3+, run in Rails console:
+  #   Feature.enable(:ci_jwt_groups_direct)
+  # Once groups_direct is working, these user bindings can be removed
+{% for user in k3s_gitlab_deployer_users %}
+  - kind: User
+    name: {{ user }}
+    apiGroup: rbac.authorization.k8s.io
+{% endfor %}
+{% endif %}
+roleRef:
+  kind: Role
+  name: {{ k3s_gitlab_deployer_role }}
+  apiGroup: rbac.authorization.k8s.io

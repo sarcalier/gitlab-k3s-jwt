@@ -1,0 +1,40 @@
+---
+# k3s OIDC integration defaults
+
+# Keycloak connection settings
+# NOTE: k8s API server requires HTTPS for OIDC issuer URL
+k3s_oidc_keycloak_url: "https://keycloak.local"
+k3s_oidc_keycloak_internal_url: "http://keycloak.local"  # For internal API calls
+k3s_oidc_realm: "gitlab"
+
+# Kubernetes OIDC client in Keycloak
+k3s_oidc_client_id: "kubernetes"
+k3s_oidc_client_secret: "kubernetes-oidc-secret-2024"
+
+# OIDC configuration for k3s API server
+k3s_oidc_issuer_url: "{{ k3s_oidc_keycloak_url }}/realms/{{ k3s_oidc_realm }}"
+k3s_oidc_username_claim: "preferred_username"
+k3s_oidc_groups_claim: "groups"
+k3s_oidc_username_prefix: ""
+k3s_oidc_groups_prefix: ""
+
+# Keycloak group for k8s deployers
+k3s_oidc_deployer_group: "k8s-deployers"
+
+# Namespace for deployment access
+k3s_oidc_deploy_namespace: "app-deploy"
+
+# RBAC Role name
+k3s_oidc_deployer_role: "deployer"
+
+# Keycloak admin credentials (should match keycloak role)
+keycloak_admin_user: admin
+keycloak_admin_password: admin
+
+# Test user credentials (should match keycloak-config role)
+keycloak_create_test_user: true
+keycloak_test_user_username: testuser
+keycloak_test_user_password: testpass123
+
+# K3s API server URL (for GitLab CI)
+k3s_api_server_url: "https://{{ ansible_host | default('10.10.1.70') }}:6443"

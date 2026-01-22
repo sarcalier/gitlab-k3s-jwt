@@ -1,0 +1,16 @@
+# K3s OIDC configuration
+# Managed by Ansible - appended to existing k3s config
+
+# OIDC Authentication for Kubernetes API server
+kube-apiserver-arg:
+  - "oidc-issuer-url={{ k3s_oidc_issuer_url }}"
+  - "oidc-client-id={{ k3s_oidc_client_id }}"
+  - "oidc-username-claim={{ k3s_oidc_username_claim }}"
+  - "oidc-groups-claim={{ k3s_oidc_groups_claim }}"
+  - "oidc-ca-file=/etc/k3s-oidc/keycloak-ca.crt"
+{% if k3s_oidc_username_prefix %}
+  - "oidc-username-prefix={{ k3s_oidc_username_prefix }}"
+{% endif %}
+{% if k3s_oidc_groups_prefix %}
+  - "oidc-groups-prefix={{ k3s_oidc_groups_prefix }}"
+{% endif %}

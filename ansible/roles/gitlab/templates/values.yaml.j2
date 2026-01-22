@@ -54,6 +54,10 @@ gitlab-runner:
     privileged: true
   # Use internal cluster service URL for runner registration
   gitlabUrl: http://{{ gitlab_release_name }}-webservice-default.{{ gitlab_namespace }}.svc.cluster.local:8181
+  # Disable SSL certificate verification for self-signed certificates
+  env:
+    - name: GIT_SSL_NO_VERIFY
+      value: "true"
 {% endif %}
 
 # Registry

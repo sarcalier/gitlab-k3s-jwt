@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  author: Ansible
+  description: Configure k3s to accept GitLab CI_JOB_JWT for deployments
+  license: MIT
+  min_ansible_version: "2.10"
+
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+
+  galaxy_tags:
+    - k3s
+    - kubernetes
+    - gitlab
+    - jwt
+    - cicd
+
+dependencies:
+  - role: gitlab-oidc

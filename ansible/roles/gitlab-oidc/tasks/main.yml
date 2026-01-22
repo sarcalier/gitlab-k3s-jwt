@@ -188,6 +188,32 @@
   environment:
     KUBECONFIG: /etc/rancher/k3s/k3s.yaml
 
+- name: Restart GitLab webservice to apply OIDC changes
+  ansible.builtin.command:
+    cmd: >
+      kubectl rollout restart deployment/gitlab-webservice-default -n {{ gitlab_oidc_namespace }}
+  register: restart_gitlab
+  changed_when: "'restarted' in restart_gitlab.stdout"
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+  when: >
+    (oidc_secret_template is defined and oidc_secret_template is changed) or
+    (oidc_values_template is defined and oidc_values_template is changed) or
+    (helm_upgrade is defined and helm_upgrade is changed)
+
+- name: Wait for GitLab webservice rollout
+  ansible.builtin.command:
+    cmd: >
+      kubectl rollout status deployment/gitlab-webservice-default -n {{ gitlab_oidc_namespace }} --timeout=300s
+  when: >
+    (oidc_secret_template is defined and oidc_secret_template is changed) or
+    (oidc_values_template is defined and oidc_values_template is changed) or
+    (helm_upgrade is defined and helm_upgrade is changed)
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
 - name: Display OIDC integration status
   ansible.builtin.debug:
     msg:

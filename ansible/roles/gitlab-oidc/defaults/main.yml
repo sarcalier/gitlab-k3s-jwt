@@ -2,7 +2,9 @@
 # GitLab OIDC integration defaults
 
 # Keycloak connection settings (should match keycloak-config role)
-gitlab_oidc_keycloak_url: "http://keycloak.local"
+# Note: Use HTTPS for issuer to match Keycloak's KC_HOSTNAME setting
+gitlab_oidc_keycloak_url: "https://keycloak.local"
+gitlab_oidc_keycloak_internal_url: "http://keycloak.local"  # For internal API calls
 gitlab_oidc_realm: "gitlab"
 
 # GitLab OIDC client credentials (should match keycloak-config role)

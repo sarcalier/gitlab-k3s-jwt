@@ -1,0 +1,70 @@
+#!/bin/bash
+# Test JWT authentication to k3s API server
+# Usage: ./test-jwt-auth.sh <username> <password>
+#
+# Note: This script gets token from internal Keycloak URL (HTTP)
+# but the token contains HTTPS issuer which k8s API server expects
+
+KEYCLOAK_URL="{{ k3s_oidc_keycloak_internal_url }}"  # Internal HTTP URL for token request
+KEYCLOAK_ISSUER="{{ k3s_oidc_keycloak_url }}"  # External HTTPS URL (for reference)
+KEYCLOAK_REALM="{{ k3s_oidc_realm }}"
+KEYCLOAK_CLIENT_ID="{{ k3s_oidc_client_id }}"
+K8S_API_SERVER="{{ k3s_api_server_url }}"
+DEPLOY_NAMESPACE="{{ k3s_oidc_deploy_namespace }}"
+
+USERNAME="${1:-{{ keycloak_test_user_username | default('testuser') }}}"
+PASSWORD="${2:-{{ keycloak_test_user_password | default('testpassword') }}}"
+
+echo "=== Getting JWT token from Keycloak ==="
+echo "URL: ${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token"
+echo "Username: ${USERNAME}"
+
+TOKEN_RESPONSE=$(curl -s -X POST \
+  "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=password" \
+  -d "client_id=${KEYCLOAK_CLIENT_ID}" \
+  -d "username=${USERNAME}" \
+  -d "password=${PASSWORD}" \
+  -d "scope=openid groups")
+
+TOKEN=$(echo $TOKEN_RESPONSE | jq -r '.access_token')
+
+if [ "$TOKEN" == "null" ] || [ -z "$TOKEN" ]; then
+  echo "ERROR: Failed to get token"
+  echo "Response: $TOKEN_RESPONSE"
+  exit 1
+fi
+
+echo ""
+echo "=== Token received successfully ==="
+echo ""
+echo "=== Token claims ==="
+echo $TOKEN | cut -d'.' -f2 | base64 -d 2>/dev/null | jq '.'
+
+echo ""
+echo "=== Testing k8s API access ==="
+echo "Server: ${K8S_API_SERVER}"
+echo "Namespace: ${DEPLOY_NAMESPACE}"
+echo ""
+
+# Test with kubectl
+echo "--- kubectl auth can-i --list ---"
+kubectl --token="${TOKEN}" \
+  --server="${K8S_API_SERVER}" \
+  --insecure-skip-tls-verify=true \
+  auth can-i --list -n ${DEPLOY_NAMESPACE} 2>/dev/null | head -20
+
+echo ""
+echo "--- kubectl get pods ---"
+kubectl --token="${TOKEN}" \
+  --server="${K8S_API_SERVER}" \
+  --insecure-skip-tls-verify=true \
+  get pods -n ${DEPLOY_NAMESPACE}
+
+echo ""
+echo "=== Test complete ==="
+echo ""
+echo "To use this token in your scripts:"
+echo "  export K8S_TOKEN='${TOKEN:0:50}...'"
+echo "  kubectl --token=\$K8S_TOKEN --server=${K8S_API_SERVER} -n ${DEPLOY_NAMESPACE} <command>"

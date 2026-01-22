@@ -17,10 +17,11 @@ data:
         whoami
     }
   # Custom server block for gitlab.gitlab.local
+  # Resolve to ingress IP (10.10.1.70) so runners can clone via https://gitlab.gitlab.local:443
   gitlab.server: |
     gitlab.gitlab.local:53 {
         hosts {
-            {{ gitlab_service_ip }} gitlab.gitlab.local
+            {{ ansible_host }} gitlab.gitlab.local
             fallthrough
         }
         whoami

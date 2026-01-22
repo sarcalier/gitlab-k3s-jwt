@@ -1,0 +1,21 @@
+---
+# Playbook to configure k3s to accept GitLab CI_JOB_JWT for deployments
+# This enables passwordless CI/CD deployments using GitLab's native JWT
+#
+# Prerequisites:
+#   1. k3s installed (install-k3s.yml)
+#   2. GitLab installed (install-gitlab.yml)
+#   3. Keycloak installed and configured (install-keycloak.yml, configure-keycloak.yml)
+#   4. GitLab OIDC with Keycloak (configure-gitlab-oidc.yml)
+
+- name: Configure k3s GitLab JWT integration
+  hosts: k3s-server
+  become: false
+  
+  vars:
+    # Override these as needed
+    k3s_gitlab_deployer_group: "k8s-deployers"
+    k3s_gitlab_deploy_namespace: "app-deploy"
+  
+  roles:
+    - role: k3s-gitlab-jwt

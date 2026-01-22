@@ -17,6 +17,7 @@ command:
   - "--db=postgres"
 
 # Extra environment variables
+# KC_HOSTNAME must include scheme (https://) for correct issuer in JWT tokens
 extraEnv: |
   - name: KEYCLOAK_ADMIN
     value: {{ keycloak_admin_user }}
@@ -25,10 +26,8 @@ extraEnv: |
   - name: KC_PROXY
     value: edge
   - name: KC_HOSTNAME
-    value: {{ keycloak_domain }}
+    value: "https://{{ keycloak_domain }}"
   - name: KC_HOSTNAME_STRICT
-    value: "false"
-  - name: KC_HOSTNAME_STRICT_HTTPS
     value: "false"
   - name: KC_HTTP_ENABLED
     value: "true"

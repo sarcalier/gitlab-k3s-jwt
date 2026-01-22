@@ -1,0 +1,61 @@
+{% raw %}variables:
+  K8S_API_SERVER: "{% endraw %}{{ k3s_api_server_url }}{% raw %}"
+  DEPLOY_NAMESPACE: "{% endraw %}{{ k3s_gitlab_deploy_namespace }}{% raw %}"
+  GIT_SSL_NO_VERIFY: "true"
+
+.kube_auth:
+  id_tokens:
+    KUBE_TOKEN:
+      aud: "{% endraw %}{{ k3s_gitlab_client_id }}{% raw %}"
+  before_script:
+    - |
+      PAYLOAD=$(echo "$KUBE_TOKEN" | cut -d'.' -f2)
+      case $((${#PAYLOAD} % 4)) in
+        2) PAYLOAD="${PAYLOAD}==" ;;
+        3) PAYLOAD="${PAYLOAD}=" ;;
+      esac
+      DECODED=$(echo "$PAYLOAD" | base64 -d 2>/dev/null || echo "")
+      if ! echo "$DECODED" | grep -q '"{% endraw %}{{ k3s_gitlab_deployer_group }}{% raw %}"'; then
+        echo "ERROR: User not in group {% endraw %}{{ k3s_gitlab_deployer_group }}{% raw %}"
+        exit 1
+      fi
+    - |
+      kubectl config set-cluster k3s --server="${K8S_API_SERVER}" --insecure-skip-tls-verify=true
+      kubectl config set-credentials gitlab-jwt --token="${KUBE_TOKEN}"
+      kubectl config set-context gitlab-deploy --cluster=k3s --user=gitlab-jwt --namespace="${DEPLOY_NAMESPACE}"
+      kubectl config use-context gitlab-deploy
+
+deploy:
+  extends: .kube_auth
+  image: bitnami/kubectl:latest
+  stage: deploy
+  script: |
+    kubectl apply -f - <<EOF
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: test-deployment
+      namespace: ${DEPLOY_NAMESPACE}
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: test
+      template:
+        metadata:
+          labels:
+            app: test
+        spec:
+          containers:
+          - name: nginx
+            image: nginx:alpine
+            ports:
+            - containerPort: 80
+    EOF
+    kubectl wait --for=condition=available --timeout=60s deployment/test-deployment -n ${DEPLOY_NAMESPACE}
+    kubectl get deployment test-deployment -n ${DEPLOY_NAMESPACE}
+    kubectl get pods -n ${DEPLOY_NAMESPACE} -l app=test
+    kubectl delete deployment test-deployment -n ${DEPLOY_NAMESPACE}
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"
+{% endraw %}

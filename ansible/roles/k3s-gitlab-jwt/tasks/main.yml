@@ -1,0 +1,288 @@
+---
+# Configure k3s to accept GitLab CI_JOB_JWT for deployments
+
+- name: Create k3s-gitlab-jwt config directory
+  ansible.builtin.file:
+    path: /etc/k3s-gitlab-jwt
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Get GitLab SSL certificate
+  ansible.builtin.shell: |
+    timeout 10 openssl s_client -showcerts -connect gitlab.gitlab.local:443 -servername gitlab.gitlab.local </dev/null 2>/dev/null | openssl x509 -outform PEM
+  register: gitlab_cert
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Save GitLab CA certificate to file
+  ansible.builtin.copy:
+    content: "{{ gitlab_cert.stdout }}"
+    dest: /etc/k3s-gitlab-jwt/gitlab-ca.crt
+    mode: "0644"
+  become: true
+  when: gitlab_cert.rc == 0 and gitlab_cert.stdout != ""
+  register: gitlab_ca_file
+
+- name: Check if GitLab CA certificate file exists
+  ansible.builtin.stat:
+    path: /etc/k3s-gitlab-jwt/gitlab-ca.crt
+  register: gitlab_ca_file_stat
+  become: true
+
+- name: Verify GitLab CA certificate file format
+  ansible.builtin.command:
+    cmd: openssl x509 -in /etc/k3s-gitlab-jwt/gitlab-ca.crt -text -noout
+  register: gitlab_ca_verify
+  changed_when: false
+  failed_when: false
+  become: true
+  when: gitlab_ca_file_stat.stat.exists
+
+# Check current k3s configuration
+- name: Read current k3s config
+  ansible.builtin.slurp:
+    src: /etc/rancher/k3s/config.yaml
+  register: k3s_config_content
+  become: true
+
+- name: Check if GitLab OIDC already configured
+  ansible.builtin.set_fact:
+    gitlab_oidc_configured: "{{ k3s_gitlab_url in (k3s_config_content.content | b64decode) }}"
+
+# Create k3s OIDC config for GitLab
+- name: Create GitLab OIDC config snippet
+  ansible.builtin.template:
+    src: k3s-gitlab-oidc.yaml.j2
+    dest: /etc/k3s-gitlab-jwt/gitlab-oidc-config.yaml
+    mode: "0600"
+  become: true
+
+- name: Check if oidc-ca-file is already in config
+  ansible.builtin.set_fact:
+    oidc_ca_file_configured: "{{ 'oidc-ca-file' in (k3s_config_content.content | b64decode) }}"
+  when: gitlab_oidc_configured
+
+- name: Add oidc-ca-file to existing GitLab OIDC config
+  ansible.builtin.lineinfile:
+    path: /etc/rancher/k3s/config.yaml
+    line: '  - "oidc-ca-file=/etc/k3s-gitlab-jwt/gitlab-ca.crt"'
+    insertafter: 'oidc-required-claim=iss:{{ k3s_gitlab_url }}'
+    state: present
+  become: true
+  register: k3s_ca_file_added
+  when:
+    - gitlab_oidc_configured
+    - gitlab_ca_file_stat.stat.exists
+    - gitlab_ca_verify.rc == 0
+    - not oidc_ca_file_configured | default(false)
+
+- name: Append GitLab OIDC config to k3s config
+  ansible.builtin.blockinfile:
+    path: /etc/rancher/k3s/config.yaml
+    block: |
+      # GitLab OIDC Authentication for CI/CD deployments
+      kube-apiserver-arg:
+        - "oidc-issuer-url={{ k3s_gitlab_url }}"
+        - "oidc-client-id={{ k3s_gitlab_client_id }}"
+        - "oidc-username-claim={{ k3s_gitlab_username_claim }}"
+        - "oidc-groups-claim={{ k3s_gitlab_groups_claim }}"
+        - "oidc-username-prefix=gitlab:"
+        - "oidc-groups-prefix=gitlab:"
+        # Allow OIDC without groups claim (groups_direct may be empty)
+        - "oidc-required-claim=iss:{{ k3s_gitlab_url }}"
+        {% if gitlab_ca_file_stat.stat.exists and gitlab_ca_verify.rc == 0 %}- "oidc-ca-file=/etc/k3s-gitlab-jwt/gitlab-ca.crt"{% endif %}
+    marker: "# {mark} ANSIBLE MANAGED GITLAB OIDC CONFIG"
+    insertafter: EOF
+  become: true
+  register: k3s_gitlab_config_updated
+  notify: Restart k3s
+  when: not gitlab_oidc_configured
+
+- name: Get k3s service status after CA file addition
+  ansible.builtin.command:
+    cmd: systemctl status k3s.service --no-pager -l
+  register: k3s_status_after_ca
+  changed_when: false
+  failed_when: false
+  become: true
+  when: k3s_ca_file_added is defined and k3s_ca_file_added.changed
+
+- name: Get k3s logs for debugging
+  ansible.builtin.command:
+    cmd: journalctl -u k3s.service -n 50 --no-pager
+  register: k3s_logs
+  changed_when: false
+  failed_when: false
+  become: true
+  when: k3s_ca_file_added is defined and k3s_ca_file_added.changed
+
+- name: Display k3s logs if service failed
+  ansible.builtin.debug:
+    var: k3s_logs.stdout_lines
+  when:
+    - k3s_ca_file_added is defined and k3s_ca_file_added.changed
+    - k3s_logs is defined
+
+- name: Restart k3s if CA file was added
+  ansible.builtin.systemd:
+    name: k3s
+    state: restarted
+  become: true
+  register: k3s_restart_after_ca
+  failed_when: false
+  when: k3s_ca_file_added is defined and k3s_ca_file_added.changed
+
+- name: Check k3s status after restart
+  ansible.builtin.command:
+    cmd: systemctl is-active k3s
+  register: k3s_active_after_ca
+  changed_when: false
+  failed_when: false
+  become: true
+  when: k3s_restart_after_ca is defined
+
+- name: Remove oidc-ca-file from config if k3s failed to start
+  ansible.builtin.replace:
+    path: /etc/rancher/k3s/config.yaml
+    regexp: '^\s+- "oidc-ca-file=.*"$'
+    replace: ''
+  become: true
+  when:
+    - k3s_restart_after_ca is defined
+    - k3s_active_after_ca.stdout != "active"
+
+- name: Restart k3s after removing oidc-ca-file
+  ansible.builtin.systemd:
+    name: k3s
+    state: restarted
+  become: true
+  when:
+    - k3s_restart_after_ca is defined
+    - k3s_active_after_ca.stdout != "active"
+
+- name: Restart k3s if GitLab OIDC config changed
+  ansible.builtin.meta: flush_handlers
+  when: k3s_gitlab_config_updated is changed
+
+- name: Wait for k3s API server to be ready
+  ansible.builtin.command:
+    cmd: kubectl get nodes
+  register: k3s_ready
+  until: k3s_ready.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Test if k3s can access GitLab JWKS endpoint
+  ansible.builtin.command:
+    cmd: curl -k -s "{{ k3s_gitlab_url }}/oauth/discovery/keys" | head -c 200
+  register: gitlab_jwks_test
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Display GitLab JWKS accessibility
+  ansible.builtin.debug:
+    msg: "GitLab JWKS endpoint: {{ 'accessible' if 'keys' in gitlab_jwks_test.stdout else 'NOT accessible - ' + gitlab_jwks_test.stdout[:100] }}"
+
+# Create RBAC resources
+- name: Create GitLab RBAC manifest
+  ansible.builtin.template:
+    src: gitlab-rbac.yaml.j2
+    dest: /etc/k3s-gitlab-jwt/gitlab-rbac.yaml
+    mode: "0644"
+  become: true
+  register: gitlab_rbac_template
+
+- name: Apply GitLab RBAC resources
+  ansible.builtin.command:
+    cmd: kubectl apply -f /etc/k3s-gitlab-jwt/gitlab-rbac.yaml
+  register: apply_gitlab_rbac
+  changed_when: "'created' in apply_gitlab_rbac.stdout or 'configured' in apply_gitlab_rbac.stdout"
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+# Generate GitLab CI template
+- name: Generate GitLab CI JWT template
+  ansible.builtin.template:
+    src: gitlab-ci-jwt.yml.j2
+    dest: /etc/k3s-gitlab-jwt/gitlab-ci-jwt.yml
+    mode: "0644"
+  become: true
+
+# Update GitLab OIDC to sync groups
+- name: Check current GitLab OIDC secret
+  ansible.builtin.command:
+    cmd: kubectl get secret gitlab-keycloak-oidc -n gitlab -o jsonpath='{.data.provider}'
+  register: gitlab_oidc_secret
+  changed_when: false
+  failed_when: false
+  become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+- name: Display integration status
+  ansible.builtin.debug:
+    msg:
+      - "============================================"
+      - "GitLab JWT → k3s Integration Complete"
+      - "============================================"
+      - ""
+      - "Configuration:"
+      - "  GitLab OIDC Issuer: {{ k3s_gitlab_url }}"
+      - "  Client ID: {{ k3s_gitlab_client_id }}"
+      - "  Username Claim: {{ k3s_gitlab_username_claim }}"
+      - "  Groups Claim: {{ k3s_gitlab_groups_claim }}"
+      - ""
+      - "RBAC:"
+      - "  Namespace: {{ k3s_gitlab_deploy_namespace }}"
+      - "  Role: {{ k3s_gitlab_deployer_role }}"
+      - "  Group: gitlab:{{ k3s_gitlab_deployer_group }}"
+      - ""
+      - "GitLab CI Template:"
+      - "  Location: /etc/k3s-gitlab-jwt/gitlab-ci-jwt.yml"
+      - "  Copy to your project: scp {{ ansible_host }}:/etc/k3s-gitlab-jwt/gitlab-ci-jwt.yml .gitlab-ci.yml"
+      - ""
+      - "============================================"
+      - "Manual curl commands for testing"
+      - "============================================"
+      - ""
+      - "# 1. Check k3s OIDC configuration:"
+      - "  ssh {{ ansible_host }} 'sudo grep -A 5 \"oidc.*gitlab\" /etc/rancher/k3s/config.yaml'"
+      - ""
+      - "# 2. Check GitLab OIDC discovery (may not be available):"
+      - "  curl -sk '{{ k3s_gitlab_url }}/.well-known/openid-configuration' | jq '.'"
+      - ""
+      - "# 3. Check RBAC configuration:"
+      - "  ssh {{ ansible_host }} 'sudo kubectl get rolebinding -n {{ k3s_gitlab_deploy_namespace }} -o yaml'"
+      - ""
+      - "# 4. Check k3s API server:"
+      - "  curl -sk '{{ k3s_api_server_url }}/api/v1' | head -20"
+      - ""
+      - "Note: GitLab CI_JOB_JWT is only available inside CI/CD pipelines."
+      - "Full testing requires running a GitLab pipeline."
+      - ""
+      - "============================================"
+      - "Usage in .gitlab-ci.yml:"
+      - "============================================"
+      - ""
+      - "deploy:"
+      - "  id_tokens:"
+      - "    KUBE_TOKEN:"
+      - "      aud: {{ k3s_gitlab_client_id }}"
+      - "  script:"
+      - "    - kubectl --token=$KUBE_TOKEN --server={{ k3s_api_server_url }} apply -f k8s/"
+      - ""
+      - "============================================"
+      - "Requirements:"
+      - "============================================"
+      - ""
+      - "1. User must be in GitLab group '{{ k3s_gitlab_deployer_group }}'"
+      - "2. GitLab group should be synced from Keycloak"
+      - "3. User logs into GitLab via Keycloak OIDC"
