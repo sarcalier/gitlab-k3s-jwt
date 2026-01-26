@@ -25,6 +25,13 @@
   when: gitlab_cert.rc == 0 and gitlab_cert.stdout != ""
   register: gitlab_ca_file
 
+- name: Read GitLab CA certificate for template
+  ansible.builtin.slurp:
+    src: /etc/k3s-gitlab-jwt/gitlab-ca.crt
+  register: gitlab_ca_file_content
+  become: true
+  when: gitlab_ca_file is defined
+
 - name: Check if GitLab CA certificate file exists
   ansible.builtin.stat:
     path: /etc/k3s-gitlab-jwt/gitlab-ca.crt
@@ -49,122 +56,174 @@
 
 - name: Check if GitLab OIDC already configured
   ansible.builtin.set_fact:
-    gitlab_oidc_configured: "{{ k3s_gitlab_url in (k3s_config_content.content | b64decode) }}"
+    gitlab_oidc_configured: "{{ k3s_gitlab_url in (k3s_config_content.content | b64decode) or 'authentication-config' in (k3s_config_content.content | b64decode) }}"
 
-# Create k3s OIDC config for GitLab
-- name: Create GitLab OIDC config snippet
+# Check for Keycloak CA certificate (from k3s-oidc role)
+- name: Check if Keycloak CA certificate exists
+  ansible.builtin.stat:
+    path: /etc/k3s-oidc/keycloak-ca.crt
+  register: keycloak_ca_file_stat
+  become: true
+
+- name: Read Keycloak CA certificate if exists
+  ansible.builtin.slurp:
+    src: /etc/k3s-oidc/keycloak-ca.crt
+  register: keycloak_ca_file
+  become: true
+  when: keycloak_ca_file_stat.stat.exists
+
+- name: Verify Keycloak CA certificate file format
+  ansible.builtin.command:
+    cmd: openssl x509 -in /etc/k3s-oidc/keycloak-ca.crt -text -noout
+  register: keycloak_ca_verify
+  changed_when: false
+  failed_when: false
+  become: true
+  when: keycloak_ca_file_stat.stat.exists
+
+# Create structured authentication configuration with multiple issuers
+- name: Create structured authentication configuration
   ansible.builtin.template:
-    src: k3s-gitlab-oidc.yaml.j2
-    dest: /etc/k3s-gitlab-jwt/gitlab-oidc-config.yaml
+    src: authentication-config.yaml.j2
+    dest: /etc/k3s-gitlab-jwt/authentication-config.yaml
     mode: "0600"
   become: true
+  register: auth_config_template
+  vars:
+    gitlab_ca_file_content: "{{ gitlab_ca_file_content | default({'content': ''}) }}"
+    keycloak_ca_file: "{{ keycloak_ca_file | default({'content': ''}) }}"
 
-- name: Check if oidc-ca-file is already in config
+# Check if structured auth config is already in use
+- name: Check if structured auth config is already configured
   ansible.builtin.set_fact:
-    oidc_ca_file_configured: "{{ 'oidc-ca-file' in (k3s_config_content.content | b64decode) }}"
-  when: gitlab_oidc_configured
+    structured_auth_configured: "{{ 'authentication-config' in (k3s_config_content.content | b64decode) }}"
 
-- name: Add oidc-ca-file to existing GitLab OIDC config
+# Remove old OIDC command line arguments if structured auth is being configured
+- name: Check for old OIDC flags in config
+  ansible.builtin.set_fact:
+    has_old_oidc_flags: "{{ 'oidc-issuer-url' in (k3s_config_content.content | b64decode) and 'authentication-config' not in (k3s_config_content.content | b64decode) }}"
+
+- name: Remove old GitLab OIDC command line arguments
+  ansible.builtin.replace:
+    path: /etc/rancher/k3s/config.yaml
+    regexp: '^\s+- "oidc-issuer-url={{ k3s_gitlab_url }}"$'
+    replace: ''
+  become: true
+  register: remove_old_gitlab_issuer
+  when: has_old_oidc_flags | default(false)
+
+- name: Remove old GitLab OIDC client-id
+  ansible.builtin.replace:
+    path: /etc/rancher/k3s/config.yaml
+    regexp: '^\s+- "oidc-client-id={{ k3s_gitlab_client_id }}"$'
+    replace: ''
+  become: true
+  register: remove_old_gitlab_client
+  when: has_old_oidc_flags | default(false)
+
+- name: Remove old GitLab OIDC username-claim
+  ansible.builtin.replace:
+    path: /etc/rancher/k3s/config.yaml
+    regexp: '^\s+- "oidc-username-claim={{ k3s_gitlab_username_claim }}"$'
+    replace: ''
+  become: true
+  when: has_old_oidc_flags | default(false)
+
+- name: Remove old GitLab OIDC groups-claim
+  ansible.builtin.replace:
+    path: /etc/rancher/k3s/config.yaml
+    regexp: '^\s+- "oidc-groups-claim={{ k3s_gitlab_groups_claim }}"$'
+    replace: ''
+  become: true
+  when: has_old_oidc_flags | default(false)
+
+- name: Remove old GitLab OIDC username-prefix
+  ansible.builtin.replace:
+    path: /etc/rancher/k3s/config.yaml
+    regexp: '^\s+- "oidc-username-prefix=gitlab:"$'
+    replace: ''
+  become: true
+  when: has_old_oidc_flags | default(false)
+
+- name: Remove old GitLab OIDC groups-prefix
+  ansible.builtin.replace:
+    path: /etc/rancher/k3s/config.yaml
+    regexp: '^\s+- "oidc-groups-prefix=gitlab:"$'
+    replace: ''
+  become: true
+  when: has_old_oidc_flags | default(false)
+
+- name: Remove old GitLab OIDC required-claim
+  ansible.builtin.replace:
+    path: /etc/rancher/k3s/config.yaml
+    regexp: '^\s+- "oidc-required-claim=iss:{{ k3s_gitlab_url }}"$'
+    replace: ''
+  become: true
+  when: has_old_oidc_flags | default(false)
+
+- name: Remove old GitLab OIDC CA file
+  ansible.builtin.replace:
+    path: /etc/rancher/k3s/config.yaml
+    regexp: '^\s+- "oidc-ca-file=/etc/k3s-gitlab-jwt/gitlab-ca.crt"$'
+    replace: ''
+  become: true
+  when: has_old_oidc_flags | default(false)
+
+# Check if kube-apiserver-arg already exists in config
+- name: Check if kube-apiserver-arg exists
+  ansible.builtin.set_fact:
+    kube_apiserver_arg_exists: "{{ 'kube-apiserver-arg' in (k3s_config_content.content | b64decode) }}"
+
+# Add structured authentication config to k3s config
+- name: Add authentication-config to existing kube-apiserver-arg
   ansible.builtin.lineinfile:
     path: /etc/rancher/k3s/config.yaml
-    line: '  - "oidc-ca-file=/etc/k3s-gitlab-jwt/gitlab-ca.crt"'
-    insertafter: 'oidc-required-claim=iss:{{ k3s_gitlab_url }}'
+    line: '  - "authentication-config=/etc/k3s-gitlab-jwt/authentication-config.yaml"'
+    insertafter: 'kube-apiserver-arg:'
     state: present
+    regexp: '^\s+- "authentication-config='
   become: true
-  register: k3s_ca_file_added
-  when:
-    - gitlab_oidc_configured
-    - gitlab_ca_file_stat.stat.exists
-    - gitlab_ca_verify.rc == 0
-    - not oidc_ca_file_configured | default(false)
+  register: k3s_auth_config_added
+  notify: Restart k3s
+  when: 
+    - kube_apiserver_arg_exists | default(false)
+    - not structured_auth_configured | default(false)
 
-- name: Append GitLab OIDC config to k3s config
+- name: Add structured authentication config block to k3s config
   ansible.builtin.blockinfile:
     path: /etc/rancher/k3s/config.yaml
     block: |
-      # GitLab OIDC Authentication for CI/CD deployments
+      # Structured Authentication Configuration (multiple OIDC issuers)
+      # Supports both GitLab CI_JOB_JWT and Keycloak direct authentication
       kube-apiserver-arg:
-        - "oidc-issuer-url={{ k3s_gitlab_url }}"
-        - "oidc-client-id={{ k3s_gitlab_client_id }}"
-        - "oidc-username-claim={{ k3s_gitlab_username_claim }}"
-        - "oidc-groups-claim={{ k3s_gitlab_groups_claim }}"
-        - "oidc-username-prefix=gitlab:"
-        - "oidc-groups-prefix=gitlab:"
-        # Allow OIDC without groups claim (groups_direct may be empty)
-        - "oidc-required-claim=iss:{{ k3s_gitlab_url }}"
-        {% if gitlab_ca_file_stat.stat.exists and gitlab_ca_verify.rc == 0 %}- "oidc-ca-file=/etc/k3s-gitlab-jwt/gitlab-ca.crt"{% endif %}
-    marker: "# {mark} ANSIBLE MANAGED GITLAB OIDC CONFIG"
+        - "authentication-config=/etc/k3s-gitlab-jwt/authentication-config.yaml"
+    marker: "# {mark} ANSIBLE MANAGED STRUCTURED AUTH CONFIG"
     insertafter: EOF
   become: true
-  register: k3s_gitlab_config_updated
+  register: k3s_auth_config_updated
   notify: Restart k3s
-  when: not gitlab_oidc_configured
+  when: 
+    - not kube_apiserver_arg_exists | default(false)
+    - not structured_auth_configured | default(false)
 
-- name: Get k3s service status after CA file addition
+# Verify authentication config file syntax
+- name: Validate authentication config YAML syntax
   ansible.builtin.command:
-    cmd: systemctl status k3s.service --no-pager -l
-  register: k3s_status_after_ca
+    cmd: python3 -c "import yaml; yaml.safe_load(open('/etc/k3s-gitlab-jwt/authentication-config.yaml'))"
+  register: auth_config_validate
   changed_when: false
   failed_when: false
   become: true
-  when: k3s_ca_file_added is defined and k3s_ca_file_added.changed
+  when: auth_config_template is changed
 
-- name: Get k3s logs for debugging
-  ansible.builtin.command:
-    cmd: journalctl -u k3s.service -n 50 --no-pager
-  register: k3s_logs
-  changed_when: false
-  failed_when: false
-  become: true
-  when: k3s_ca_file_added is defined and k3s_ca_file_added.changed
-
-- name: Display k3s logs if service failed
-  ansible.builtin.debug:
-    var: k3s_logs.stdout_lines
-  when:
-    - k3s_ca_file_added is defined and k3s_ca_file_added.changed
-    - k3s_logs is defined
-
-- name: Restart k3s if CA file was added
-  ansible.builtin.systemd:
-    name: k3s
-    state: restarted
-  become: true
-  register: k3s_restart_after_ca
-  failed_when: false
-  when: k3s_ca_file_added is defined and k3s_ca_file_added.changed
-
-- name: Check k3s status after restart
-  ansible.builtin.command:
-    cmd: systemctl is-active k3s
-  register: k3s_active_after_ca
-  changed_when: false
-  failed_when: false
-  become: true
-  when: k3s_restart_after_ca is defined
-
-- name: Remove oidc-ca-file from config if k3s failed to start
-  ansible.builtin.replace:
-    path: /etc/rancher/k3s/config.yaml
-    regexp: '^\s+- "oidc-ca-file=.*"$'
-    replace: ''
-  become: true
-  when:
-    - k3s_restart_after_ca is defined
-    - k3s_active_after_ca.stdout != "active"
-
-- name: Restart k3s after removing oidc-ca-file
-  ansible.builtin.systemd:
-    name: k3s
-    state: restarted
-  become: true
-  when:
-    - k3s_restart_after_ca is defined
-    - k3s_active_after_ca.stdout != "active"
-
-- name: Restart k3s if GitLab OIDC config changed
+- name: Restart k3s if authentication config changed
   ansible.builtin.meta: flush_handlers
-  when: k3s_gitlab_config_updated is changed
+  when: 
+    - auth_config_template is changed or
+      k3s_auth_config_updated is changed or
+      k3s_auth_config_added is changed or
+      remove_old_gitlab_issuer is changed or
+      remove_old_gitlab_client is changed
 
 - name: Wait for k3s API server to be ready
   ansible.builtin.command:
@@ -231,14 +290,27 @@
   ansible.builtin.debug:
     msg:
       - "============================================"
-      - "GitLab JWT → k3s Integration Complete"
+      - "k3s Multi-Issuer OIDC Integration Complete"
       - "============================================"
       - ""
-      - "Configuration:"
-      - "  GitLab OIDC Issuer: {{ k3s_gitlab_url }}"
+      - "Authentication Configuration:"
+      - "  Type: Structured (multiple issuers)"
+      - "  Config File: /etc/k3s-gitlab-jwt/authentication-config.yaml"
+      - ""
+      - "Issuer 1 - GitLab (CI/CD JWT):"
+      - "  URL: {{ k3s_gitlab_url }}"
       - "  Client ID: {{ k3s_gitlab_client_id }}"
       - "  Username Claim: {{ k3s_gitlab_username_claim }}"
       - "  Groups Claim: {{ k3s_gitlab_groups_claim }}"
+      - "  Prefix: gitlab:"
+      - ""
+      - "Issuer 2 - Keycloak (Direct Auth):"
+      - "  URL: {{ k3s_oidc_issuer_url }}"
+      - "  Client ID: {{ k3s_oidc_client_id }}"
+      - "  Username Claim: {{ k3s_oidc_username_claim }}"
+      - "  Groups Claim: {{ k3s_oidc_groups_claim }}"
+      - "  Username Prefix: {{ k3s_oidc_username_prefix if k3s_oidc_username_prefix else '(none)' }}"
+      - "  Groups Prefix: {{ k3s_oidc_groups_prefix if k3s_oidc_groups_prefix else '(none)' }}"
       - ""
       - "RBAC:"
       - "  Namespace: {{ k3s_gitlab_deploy_namespace }}"
@@ -247,42 +319,19 @@
       - ""
       - "GitLab CI Template:"
       - "  Location: /etc/k3s-gitlab-jwt/gitlab-ci-jwt.yml"
-      - "  Copy to your project: scp {{ ansible_host }}:/etc/k3s-gitlab-jwt/gitlab-ci-jwt.yml .gitlab-ci.yml"
       - ""
       - "============================================"
-      - "Manual curl commands for testing"
+      - "Testing:"
       - "============================================"
       - ""
-      - "# 1. Check k3s OIDC configuration:"
-      - "  ssh {{ ansible_host }} 'sudo grep -A 5 \"oidc.*gitlab\" /etc/rancher/k3s/config.yaml'"
+      - "# Check authentication config:"
+      - "  ssh {{ ansible_host }} 'sudo cat /etc/k3s-gitlab-jwt/authentication-config.yaml'"
       - ""
-      - "# 2. Check GitLab OIDC discovery (may not be available):"
-      - "  curl -sk '{{ k3s_gitlab_url }}/.well-known/openid-configuration' | jq '.'"
+      - "# Check k3s config:"
+      - "  ssh {{ ansible_host }} 'sudo grep authentication-config /etc/rancher/k3s/config.yaml'"
       - ""
-      - "# 3. Check RBAC configuration:"
-      - "  ssh {{ ansible_host }} 'sudo kubectl get rolebinding -n {{ k3s_gitlab_deploy_namespace }} -o yaml'"
+      - "# Test GitLab JWT (in pipeline):"
+      - '  kubectl auth whoami --token=$KUBE_TOKEN'
       - ""
-      - "# 4. Check k3s API server:"
-      - "  curl -sk '{{ k3s_api_server_url }}/api/v1' | head -20"
-      - ""
-      - "Note: GitLab CI_JOB_JWT is only available inside CI/CD pipelines."
-      - "Full testing requires running a GitLab pipeline."
-      - ""
-      - "============================================"
-      - "Usage in .gitlab-ci.yml:"
-      - "============================================"
-      - ""
-      - "deploy:"
-      - "  id_tokens:"
-      - "    KUBE_TOKEN:"
-      - "      aud: {{ k3s_gitlab_client_id }}"
-      - "  script:"
-      - "    - kubectl --token=$KUBE_TOKEN --server={{ k3s_api_server_url }} apply -f k8s/"
-      - ""
-      - "============================================"
-      - "Requirements:"
-      - "============================================"
-      - ""
-      - "1. User must be in GitLab group '{{ k3s_gitlab_deployer_group }}'"
-      - "2. GitLab group should be synced from Keycloak"
-      - "3. User logs into GitLab via Keycloak OIDC"
+      - "# Test Keycloak token:"
+      - '  kubectl auth whoami --token=$KEYCLOAK_TOKEN'

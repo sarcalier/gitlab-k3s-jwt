@@ -27,3 +27,17 @@ k3s_gitlab_deployer_role: "gitlab-deployer"
 
 # K3s API server URL
 k3s_api_server_url: "https://{{ ansible_host | default('10.10.1.70') }}:6443"
+
+# Keycloak OIDC configuration (for direct authentication)
+# These should match k3s-oidc role defaults
+k3s_oidc_keycloak_url: "https://keycloak.local"
+k3s_oidc_realm: "gitlab"
+k3s_oidc_issuer_url: "{{ k3s_oidc_keycloak_url }}/realms/{{ k3s_oidc_realm }}"
+k3s_oidc_client_id: "kubernetes"
+k3s_oidc_username_claim: "preferred_username"
+k3s_oidc_groups_claim: "groups"
+k3s_oidc_username_prefix: ""
+k3s_oidc_groups_prefix: ""
+
+# Use structured authentication configuration (multiple issuers)
+k3s_use_structured_auth: true
